@@ -1,12 +1,14 @@
 /*
-File:        lib/main.dart
-Author:      Colin Bond
-Description: Main application file for Home AI Max Flutter app.
+  File:        lib/main.dart
+  Author:      Colin Bond
+  Description: Main application file for Home AI Max Flutter app.
 */
 
 import 'package:flutter/material.dart';
+
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
 
 void main() {
@@ -49,20 +51,32 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+
   final TextEditingController _controller = TextEditingController();
   bool _isLoading = false;
   String? _feedbackMessage;
 
+  late stt.SpeechToText _speech;
+  bool _isListening = false;
+  String _lastRecognized = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _speech = stt.SpeechToText();
+  }
+
   Future<void> _sendText() async {
-  final text = _controller.text.trim();
-  final encodedBody = jsonEncode({'query': text});
-  final headers = {'Content-Type': 'application/json'};
-  if (text.isEmpty) return;
+    final text = _controller.text.trim();
+    final encodedBody = jsonEncode({'query': text});
+    final headers = {'Content-Type': 'application/json'};
+    if (text.isEmpty) return;
     setState(() {
       _isLoading = true;
       _feedbackMessage = null;
     });
     try {
+      final webhookUrl = await ConfigManager.getWebhookUrl();
       final response = await http.post(
         Uri.parse(webhookUrl),
         headers: headers,
@@ -86,6 +100,48 @@ class _MainScreenState extends State<MainScreen> {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _toggleListening() async {
+    if (_isListening) {
+      await _speech.stop();
+      setState(() {
+        _isListening = false;
+      });
+    } else {
+      bool available = await _speech.initialize(
+        onStatus: (status) {
+          if (status == 'done' || status == 'notListening') {
+            setState(() {
+              _isListening = false;
+            });
+          }
+        },
+        onError: (error) {
+          setState(() {
+            _isListening = false;
+          });
+        },
+      );
+      if (available) {
+        setState(() {
+          _isListening = true;
+          _controller.clear();
+        });
+        _speech.listen(
+          onResult: (result) {
+            setState(() {
+              _lastRecognized = result.recognizedWords;
+              _controller.text = _lastRecognized;
+              _controller.selection = TextSelection.fromPosition(
+                TextPosition(offset: _controller.text.length),
+              );
+            });
+          },
+          localeId: 'en_US',
+        );
+      }
     }
   }
 
@@ -127,23 +183,60 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildTextInput(BuildContext context) {
-    return TextField(
-      controller: _controller,
-      minLines: 1,
-      maxLines: 5,
-      style: const TextStyle(fontSize: 18),
-      textInputAction: TextInputAction.send,
-      onSubmitted: (_) => _sendText(),
-      decoration: InputDecoration(
-        hintText: 'Type your message...',
-        suffixIcon: IconButton(
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            minLines: 1,
+            maxLines: 5,
+            style: const TextStyle(fontSize: 18),
+            textInputAction: TextInputAction.send,
+            onSubmitted: (_) => _sendText(),
+            decoration: const InputDecoration(
+              hintText: 'Type your message...'
+            ),
+            onChanged: (_) => setState(() {}),
+            enabled: !_isLoading && !_isListening,
+          ),
+        ),
+        const SizedBox(width: 8),
+        _buildMicButton(context),
+        const SizedBox(width: 8),
+        IconButton(
           icon: const Icon(Icons.send_rounded),
           color: Theme.of(context).colorScheme.primary,
-          onPressed: _controller.text.trim().isEmpty || _isLoading ? null : _sendText,
+          onPressed: _controller.text.trim().isEmpty || _isLoading || _isListening ? null : _sendText,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMicButton(BuildContext context) {
+    return GestureDetector(
+      onTap: _isLoading ? null : _toggleListening,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: _isListening ? Colors.redAccent : Colors.grey[800],
+          shape: BoxShape.circle,
+          boxShadow: _isListening
+              ? [
+                  BoxShadow(
+                    color: Colors.redAccent.withOpacity(0.6),
+                    blurRadius: 16,
+                    spreadRadius: 2,
+                  ),
+                ]
+              : [],
+        ),
+        child: Icon(
+          _isListening ? Icons.mic : Icons.mic_none,
+          color: Colors.white,
         ),
       ),
-      onChanged: (_) => setState(() {}),
-      enabled: !_isLoading,
     );
   }
 }
