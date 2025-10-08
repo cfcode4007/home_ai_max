@@ -1,5 +1,10 @@
-// Config file handler for Home AI Max
-// Reads and writes a simple key-value text file for config
+/*
+  File:        lib/config.dart
+  Author:      Colin Bond
+
+  Description: Config file handler for Home AI Max Flutter app.
+               Reads and writes a simple key-value text file for runtime-editable config.
+*/
 
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
@@ -7,10 +12,7 @@ import 'package:path_provider/path_provider.dart';
 class ConfigManager {
 	static const String _fileName = 'config.txt';
 	static const String defaultWebhookUrl = 'http://192.168.123.199:8123/api/webhook/chatgpt_ask';
-	static const String defaultWakeWord = 'Max';
-	static const int defaultMaxDuration = 20; // seconds
-	static const int defaultSilenceTimeout = 2; // seconds
-	static const String defaultPicovoiceKey = '';
+	// static const String defaultgTTSUrl = '';
 
 	static Future<File> _getConfigFile() async {
 		final dir = await getApplicationDocumentsDirectory();
@@ -20,7 +22,7 @@ class ConfigManager {
 	static Future<Map<String, String>> _readConfigMap() async {
 		final file = await _getConfigFile();
 		if (!(await file.exists())) {
-			await file.writeAsString('webhook_url=$defaultWebhookUrl\nwake_word=$defaultWakeWord\nmax_duration=$defaultMaxDuration\nsilence_timeout=$defaultSilenceTimeout\npicovoice_key=$defaultPicovoiceKey\n');
+			await file.writeAsString('webhook_url=$defaultWebhookUrl\n');
 		}
 		final lines = await file.readAsLines();
 		final map = <String, String>{};
@@ -40,24 +42,10 @@ class ConfigManager {
 		return map['webhook_url']?.isNotEmpty == true ? map['webhook_url']! : defaultWebhookUrl;
 	}
 
-	static Future<String> getWakeWord() async {
+	static Future<String> getTtsServerUrl() async {
 		final map = await _readConfigMap();
-		return map['wake_word']?.isNotEmpty == true ? map['wake_word']! : defaultWakeWord;
-	}
-
-	static Future<int> getMaxDuration() async {
-		final map = await _readConfigMap();
-		return int.tryParse(map['max_duration'] ?? '') ?? defaultMaxDuration;
-	}
-
-	static Future<int> getSilenceTimeout() async {
-		final map = await _readConfigMap();
-		return int.tryParse(map['silence_timeout'] ?? '') ?? defaultSilenceTimeout;
-	}
-
-	static Future<String> getPicovoiceKey() async {
-		final map = await _readConfigMap();
-		return map['picovoice_key'] ?? defaultPicovoiceKey;
+		// Allow configuring a separate flask server base URL; fall back to same host as webhook
+		return map['tts_server_url']?.isNotEmpty == true ? map['tts_server_url']! : 'http://192.168.123.128:5001';
 	}
 
 	static Future<void> setConfigValue(String key, String value) async {

@@ -8,8 +8,14 @@ import 'package:flutter/material.dart';
 
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'widgets/orb_visualizer.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 
 void main() {
   runApp(const HomeAIMaxApp());
@@ -53,6 +59,10 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   // Debug log state
   final List<String> _debugLog = [];
+  bool _isSpeaking = false;
+  late final FlutterTts _tts;
+  HttpServer? _server;
+  late final AudioPlayer _audioPlayer;
 
   void _addDebug(String message) {
     setState(() {
@@ -66,155 +76,31 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
-    _initWakeWordConfig();
-  }
-
-  Future<void> _initWakeWordConfig() async {
-    _wakeWord = (await ConfigManager.getWakeWord()).toLowerCase();
-    _wakeWordMaxDuration = await ConfigManager.getMaxDuration();
-    _wakeWordSilenceTimeout = await ConfigManager.getSilenceTimeout();
-    setState(() {});
-  }
-
-  void _toggleWakeWordMode() async {
-    _addDebug('Orb pressed: toggling wake word mode ${_wakeWordMode ? 'OFF' : 'ON'}');
-    if (_wakeWordMode) {
-      // Turn off wake word mode
-      setState(() {
-        _wakeWordMode = false;
-        _wakeWordActive = false;
-      });
-      await _speech.stop();
-      _addDebug('Wake word mode OFF, listening stopped');
-    } else {
-      // Turn on wake word mode
-      setState(() {
-        _wakeWordMode = true;
-        _wakeWordActive = false;
-      });
-      _controller.clear();
-      _addDebug('Wake word mode ON, listening for wake word');
-      _listenForWakeWord();
-    }
-  }
-
-  void _listenForWakeWord() async {
-    if (!_wakeWordMode) return;
-    _addDebug('Initializing speech recognizer for wake word...');
-    // Always re-initialize before listening for wake word again
-    bool available = await _speech.initialize(
-      onStatus: (status) {
-        if (!_wakeWordMode) return;
-        if (status == 'done' || status == 'notListening') {
-          _addDebug('Wake word listening stopped by status: $status, restarting...');
-          if (_wakeWordMode && !_wakeWordActive) {
-            Future.delayed(const Duration(milliseconds: 200), _listenForWakeWord);
-          }
-        }
-      },
-      onError: (error) {
-        _addDebug('Wake word listening error: "+${error.errorMsg}"');
-        if (_wakeWordMode && !_wakeWordActive) {
-          Future.delayed(const Duration(milliseconds: 200), _listenForWakeWord);
-        }
-      },
-    );
-    if (available) {
-      _addDebug('Listening for wake word: "$_wakeWord" (continuous, no timeout)');
-      await _speech.listen(
-        listenMode: stt.ListenMode.dictation,
-        onResult: (result) {
-          if (!_wakeWordMode) return;
-          final recognized = result.recognizedWords.toLowerCase();
-          _addDebug('Wake word listen result: "$recognized"');
-          if (!_wakeWordActive && recognized.contains(_wakeWord)) {
-            // Wake word detected, start recording
-            setState(() {
-              _wakeWordActive = true;
-            });
-            _addDebug('Wake word detected! Starting transcription...');
-            _controller.clear();
-            _startWakeWordRecording();
-          }
-        },
-        localeId: 'en_US',
-        partialResults: true,
-        // No listenFor: let it listen indefinitely for wake word
-      );
-    } else {
-      _addDebug('Speech recognizer not available');
-    }
-  }
-
-  void _startWakeWordRecording() async {
-    if (!_wakeWordMode) return;
-    DateTime start = DateTime.now();
-    int maxDuration = _wakeWordMaxDuration;
-    int silenceTimeout = _wakeWordSilenceTimeout;
-    _addDebug('Transcribing started (wake word mode)');
-    await _speech.listen(
-      listenMode: stt.ListenMode.dictation,
-      onResult: (result) {
-        if (!_wakeWordMode) return;
-        final now = DateTime.now();
-        String recognized = result.recognizedWords;
-        // Remove everything up to and including the first occurrence of the wake word (case-insensitive, word boundary)
-        final wakeWordPattern = RegExp(r'(^|\b)' + RegExp.escape(_wakeWord) + r'\b', caseSensitive: false);
-        final match = wakeWordPattern.firstMatch(recognized);
-        if (match != null) {
-          recognized = recognized.substring(match.end).trimLeft();
-        }
-        setState(() {
-          // Always append to the latest text in the field
-          String currentText = _controller.text;
-          String newText = currentText.trim().isEmpty
-              ? recognized
-              : (currentText.trimRight() + (recognized.isNotEmpty ? ' ' : '') + recognized);
-          _controller.text = newText.trimLeft();
-          _controller.selection = TextSelection.fromPosition(
-            TextPosition(offset: _controller.text.length),
-          );
-        });
-        _addDebug('Transcribing: "$recognized"');
-        // Stop if max duration reached
-        if (now.difference(start).inSeconds >= maxDuration) {
-          _addDebug('Max duration reached, stopping transcription');
-          _stopWakeWordRecording();
-        }
-      },
-      localeId: 'en_US',
-      partialResults: true,
-      listenFor: Duration(seconds: maxDuration),
-      pauseFor: Duration(seconds: silenceTimeout), // Only for transcription
-      onSoundLevelChange: null,
-      onDevice: false,
-      cancelOnError: true,
-    );
-  }
-
-  void _stopWakeWordRecording() async {
-    await _speech.stop();
-    setState(() {
-      _wakeWordActive = false;
+    _tts = FlutterTts();
+    _audioPlayer = AudioPlayer();
+    _audioPlayer.onPlayerComplete.listen((event) {
+      setState(() => _isSpeaking = false);
+      _addDebug('AudioPlayer: playback complete');
     });
-    _addDebug('Transcribing stopped (wake word mode)');
-    // Always resume listening for wake word if mode is still on
-    if (_wakeWordMode) {
-      _addDebug('Force re-initializing for wake word listening...');
-      // Ensure recognizer is fully reset before listening again
-      await Future.delayed(const Duration(milliseconds: 350));
-      await _speech.cancel();
-      await Future.delayed(const Duration(milliseconds: 150));
-      _listenForWakeWord();
-    }
+    // start local server to receive notifications from Flask
+    _startLocalServer();
+    _addDebug('Initializing TTS');
+    _tts.setStartHandler(() {
+      setState(() => _isSpeaking = true);
+      _addDebug('TTS: start handler called');
+    });
+    _tts.setCompletionHandler(() {
+      setState(() => _isSpeaking = false);
+      _addDebug('TTS: completion handler called');
+    });
+    _tts.setErrorHandler((msg) {
+      setState(() => _isSpeaking = false);
+      _addDebug('TTS: error handler called: $msg');
+    });
+    // Optional: get TTS engine status
+  _tts.getEngines.then((engines) => _addDebug('Available TTS engines: $engines')).catchError((e) => _addDebug('Error getting TTS engines: $e'));
   }
-  // Wake word mode state
-  bool _wakeWordMode = false;
-  bool _wakeWordActive = false; // true when recording after wake word
   // ...existing code...
-  int _wakeWordMaxDuration = 20;
-  int _wakeWordSilenceTimeout = 2;
-  String _wakeWord = 'Max';
 
 
   final TextEditingController _controller = TextEditingController();
@@ -228,7 +114,111 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _speech.stop();
+    _tts.stop();
+    _audioPlayer.dispose();
+    _server?.close(force: true);
     super.dispose();
+  }
+
+  Future<void> _startLocalServer() async {
+    try {
+      await _registerIP();
+      _server = await HttpServer.bind(InternetAddress.anyIPv4, 5000);
+      _addDebug('Local server listening on port 5000');
+      _server!.listen((HttpRequest request) async {
+        try {
+          final path = request.uri.path;
+          final method = request.method;
+          final body = await utf8.decoder.bind(request).join();
+          _addDebug('Incoming $method $path');
+          _addDebug('Incoming body: $body');
+          if (method == 'POST' && path == '/notify') {
+            try {
+              final data = jsonDecode(body);
+              final message = (data['message'] ?? '').toString();
+              if (message.isNotEmpty) {
+                setState(() {
+                  _feedbackMessage = message;
+                });
+                _addDebug('Received notify message: $message');
+                // Request TTS audio from configured Flask server and play it
+                await _requestAndPlayTts(message);
+              } else {
+                _addDebug('Notify received but no message field');
+              }
+            } catch (e) {
+              _addDebug('Error decoding notify JSON: $e');
+            }
+            request.response.statusCode = 200;
+            request.response.headers.set('Access-Control-Allow-Origin', '*');
+            request.response.write('Received');
+          } else if (method == 'OPTIONS') {
+            request.response.statusCode = 200;
+            request.response.headers.set('Access-Control-Allow-Origin', '*');
+            request.response.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+            request.response.write('OK');
+          } else {
+            request.response.statusCode = 404;
+            request.response.write('Not found');
+          }
+        } catch (e) {
+          _addDebug('Local server handler error: $e');
+          try {
+            request.response.statusCode = 500;
+            request.response.write('Error');
+          } catch (_) {}
+        } finally {
+          await request.response.close();
+        }
+      });
+    } catch (e) {
+      _addDebug('Failed to start local server: $e');
+    }
+  }
+
+  Future<void> _requestAndPlayTts(String text) async {
+    try {
+      final ttsBase = await ConfigManager.getTtsServerUrl();
+      final uri = Uri.parse('$ttsBase/tts');
+      _addDebug('Requesting TTS from $uri');
+      final resp = await http.post(uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'text': text}),
+      ).timeout(const Duration(seconds: 8));
+      _addDebug('TTS response: ${resp.statusCode} ${resp.reasonPhrase}');
+      _addDebug('TTS response headers: ${resp.headers}');
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        final contentType = resp.headers['content-type'] ?? '';
+        if (contentType.contains('audio') && resp.bodyBytes.isNotEmpty) {
+          _addDebug('Playing returned audio (${resp.bodyBytes.length} bytes)');
+          setState(() => _isSpeaking = true);
+          try {
+            await _audioPlayer.play(BytesSource(resp.bodyBytes));
+          } catch (e) {
+            _addDebug('AudioPlayer.play error: $e');
+            // fallback to local TTS
+            await _speakReply(text);
+          }
+        } else {
+          // Not audio: maybe JSON with text reply
+          _addDebug('TTS response is not audio, falling back to local TTS');
+          String? reply;
+          try {
+            final decoded = jsonDecode(resp.body);
+            if (decoded is Map) reply = decoded['reply'] ?? decoded['message'] ?? decoded['text'];
+          } catch (_) {
+            // ignore
+          }
+          await _speakReply(reply ?? text);
+        }
+      } else {
+        _addDebug('TTS request failed: ${resp.statusCode}');
+        await _speakReply(text);
+      }
+    } catch (e) {
+      _addDebug('Error requesting TTS: $e');
+      await _speakReply(text);
+    }
   }
 
   // ...existing code...
@@ -253,6 +243,41 @@ class _MainScreenState extends State<MainScreen> {
       ).timeout(const Duration(seconds: 5));
       _addDebug('Response: ${response.statusCode} ${response.reasonPhrase}');
       if (response.statusCode >= 200 && response.statusCode < 300) {
+        // Log response details for debugging
+        _addDebug('Response body: ${response.body}');
+        _addDebug('Response headers: ${response.headers}');
+
+        // Try to parse reply text from the response body
+        String? reply;
+        try {
+          final decoded = jsonDecode(response.body);
+          _addDebug('Response JSON decoded');
+          if (decoded is Map) {
+            reply = decoded['reply'] ?? decoded['message'] ?? decoded['text'] ?? decoded['response'];
+            _addDebug('Extracted reply key value: $reply');
+          } else if (decoded is String) {
+            reply = decoded;
+            _addDebug('Decoded response is string');
+          }
+        } catch (e) {
+          _addDebug('Response not JSON: $e');
+          // Not JSON: treat entire body as plain text
+          if (response.body.trim().isNotEmpty) {
+            reply = response.body.trim();
+            _addDebug('Using raw body as reply: $reply');
+          }
+        }
+
+        if (reply != null && reply.isNotEmpty) {
+          _addDebug('Server reply: $reply');
+          // ensure the orb animates immediately while we attempt to speak
+          setState(() => _isSpeaking = true);
+          _speakReply(reply);
+        } else {
+          setState(() {
+            _feedbackMessage = 'Message sent successfully! (no reply)';
+          });
+        }
         setState(() {
           _feedbackMessage = 'Message sent successfully!';
         });
@@ -271,6 +296,20 @@ class _MainScreenState extends State<MainScreen> {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _speakReply(String text) async {
+    try {
+      _addDebug('TTS: preparing to speak');
+      await _tts.setLanguage('en-US');
+      await _tts.setPitch(1.0);
+      final speakResult = await _tts.speak(text);
+      _addDebug('TTS.speak returned: $speakResult');
+      // some platforms return immediately and call completion handler later
+    } catch (e, st) {
+      _addDebug('TTS speak error: $e\n$st');
+      setState(() => _isSpeaking = false);
     }
   }
 
@@ -325,6 +364,20 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
+  Future<void> _registerIP() async {
+    try {
+      final ip = (await NetworkInterface.list()).first.addresses.first.address;
+      await http.post(
+        Uri.parse('http://192.168.123.128:5001/register-ip'), // Flask server IP
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'ip': ip}),
+      );
+    } catch (e) {
+      _addDebug('IP registration failed: $e');
+      // print('IP registration failed: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -335,55 +388,8 @@ class _MainScreenState extends State<MainScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                GestureDetector(
-                  onTap: _isLoading ? null : _toggleWakeWordMode,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 250),
-                    width: 120,
-                    height: 120,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: _wakeWordMode
-                          ? const LinearGradient(
-                              colors: [Color(0xFFB71C1C), Color(0xFF880808)],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            )
-                          : const LinearGradient(
-                              colors: [Color(0xFF6D5DF6), Color(0xFF3A3A6A)],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
-                      boxShadow: _wakeWordMode || _wakeWordActive
-                          ? [
-                              BoxShadow(
-                                color: Colors.redAccent.withOpacity(0.6),
-                                blurRadius: 32,
-                                spreadRadius: 8,
-                                offset: const Offset(0, 8),
-                              ),
-                            ]
-                          : [
-                              BoxShadow(
-                                color: Colors.deepPurpleAccent.withOpacity(0.4),
-                                blurRadius: 32,
-                                spreadRadius: 4,
-                                offset: const Offset(0, 8),
-                              ),
-                            ],
-                      border: _wakeWordMode || _wakeWordActive
-                          ? Border.all(color: Colors.redAccent, width: 4)
-                          : null,
-                    ),
-                    child: Center(
-                      child: Icon(
-                        _wakeWordMode || _wakeWordActive ? Icons.hearing : Icons.bubble_chart_rounded,
-                        size: 48,
-                        color: Colors.white.withOpacity(0.85),
-                      ),
-                    ),
-                  ),
-                ),
+                // Orb visual (animates when speaking)
+                OrbVisualizer(isSpeaking: _isSpeaking, size: 120),
                 const SizedBox(height: 48),
                 _buildTextInput(context),
                 const SizedBox(height: 16),
@@ -391,16 +397,27 @@ class _MainScreenState extends State<MainScreen> {
                 if (_feedbackMessage != null && !_isLoading)
                   Padding(
                     padding: const EdgeInsets.only(top: 12.0),
-                    child: Text(
-                      _feedbackMessage!,
-                      style: TextStyle(
-                        color: _feedbackMessage!.startsWith('Message sent')
-                            ? Colors.greenAccent
-                            : Colors.redAccent,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
+                    child: Builder(builder: (context) {
+                      final msg = _feedbackMessage!;
+                      Color color;
+                      final lower = msg.toLowerCase();
+                      if (msg.startsWith('Message sent')) {
+                        color = Colors.greenAccent;
+                      } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
+                        color = Colors.redAccent;
+                      } else {
+                        // Normal server-returned text should be white
+                        color = Colors.white;
+                      }
+                      return Text(
+                        msg,
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        textAlign: TextAlign.center,
+                      );
+                    }),
                   ),
                 const SizedBox(height: 24),
                 // Debug log area
@@ -446,7 +463,7 @@ class _MainScreenState extends State<MainScreen> {
               hintText: 'Type your message...'
             ),
             onChanged: (_) => setState(() {}),
-            enabled: !_isLoading && !_isListening && !_wakeWordActive,
+            enabled: !_isLoading && !_isListening,
           ),
         ),
         const SizedBox(width: 8),
@@ -455,7 +472,7 @@ class _MainScreenState extends State<MainScreen> {
         IconButton(
           icon: const Icon(Icons.send_rounded),
           color: Theme.of(context).colorScheme.primary,
-          onPressed: _controller.text.trim().isEmpty || _isLoading || _isListening || _wakeWordActive ? null : _sendText,
+          onPressed: _controller.text.trim().isEmpty || _isLoading || _isListening ? null : _sendText,
         ),
       ],
     );
