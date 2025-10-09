@@ -9,13 +9,11 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'widgets/orb_visualizer.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
-import 'package:network_info_plus/network_info_plus.dart';
 
 void main() {
   runApp(const HomeAIMaxApp());
@@ -63,6 +61,8 @@ class _MainScreenState extends State<MainScreen> {
   late final FlutterTts _tts;
   HttpServer? _server;
   late final AudioPlayer _audioPlayer;
+  // Centralized in-memory config cache (loaded once on init)
+  final Map<String, String> _config = {};
 
   void _addDebug(String message) {
     setState(() {
@@ -75,6 +75,8 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
+    // Load config early into a centralized variable used across the app
+    _initConfig();
     _speech = stt.SpeechToText();
     _tts = FlutterTts();
     _audioPlayer = AudioPlayer();
@@ -82,8 +84,8 @@ class _MainScreenState extends State<MainScreen> {
       setState(() => _isSpeaking = false);
       _addDebug('AudioPlayer: playback complete');
     });
-    // start local server to receive notifications from Flask
-    _startLocalServer();
+  // start local server to receive notifications from Flask
+  _startLocalServer();
     _addDebug('Initializing TTS');
     _tts.setStartHandler(() {
       setState(() => _isSpeaking = true);
@@ -100,8 +102,30 @@ class _MainScreenState extends State<MainScreen> {
     // Optional: get TTS engine status
   _tts.getEngines.then((engines) => _addDebug('Available TTS engines: $engines')).catchError((e) => _addDebug('Error getting TTS engines: $e'));
   }
-  // ...existing code...
 
+  Future<void> _initConfig() async {
+    try {
+      final webhook = await ConfigManager.getWebhookUrl();
+      final tts = await ConfigManager.getTtsServerUrl();
+      setState(() {
+        _config['webhook'] = webhook;
+        _config['tts'] = tts;
+      });
+  _addDebug('Config loaded: webhook=$webhook tts=$tts');
+    } catch (e) {
+      _addDebug('Failed to load config: $e');
+    }
+  }
+
+  Future<void> _resetToDefaults() async {
+    try {
+      await ConfigManager.setConfigValue('webhook_url', ConfigManager.defaultWebhookUrl);
+      await ConfigManager.setConfigValue('tts_server_url', ConfigManager.defaultTtsUrl);
+      await _initConfig();
+    } catch (e) {
+      _addDebug('Failed to reset defaults: $e');
+    }
+  }
 
   final TextEditingController _controller = TextEditingController();
   bool _isLoading = false;
@@ -178,7 +202,7 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _requestAndPlayTts(String text) async {
     try {
-      final ttsBase = await ConfigManager.getTtsServerUrl();
+      final ttsBase = _config['tts'] ?? await ConfigManager.getTtsServerUrl();
       final uri = Uri.parse('$ttsBase/tts');
       _addDebug('Requesting TTS from $uri');
       final resp = await http.post(uri,
@@ -221,8 +245,6 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  // ...existing code...
-
   Future<void> _sendText() async {
     final text = _controller.text.trim();
     final encodedBody = jsonEncode({'query': text});
@@ -233,8 +255,8 @@ class _MainScreenState extends State<MainScreen> {
       _feedbackMessage = null;
     });
     try {
-      final webhookUrl = await ConfigManager.getWebhookUrl();
-      _addDebug('Sending to webhook: $webhookUrl');
+  final webhookUrl = _config['webhook'] ?? await ConfigManager.getWebhookUrl();
+  _addDebug('Sending to webhook: $webhookUrl');
       _addDebug('Payload: $encodedBody');
       final response = await http.post(
         Uri.parse(webhookUrl),
@@ -246,9 +268,9 @@ class _MainScreenState extends State<MainScreen> {
         // Log response details for debugging
         _addDebug('Response body: ${response.body}');
         _addDebug('Response headers: ${response.headers}');
-
+        
+        String? reply;        
         // Try to parse reply text from the response body
-        String? reply;
         try {
           final decoded = jsonDecode(response.body);
           _addDebug('Response JSON decoded');
@@ -260,7 +282,7 @@ class _MainScreenState extends State<MainScreen> {
             _addDebug('Decoded response is string');
           }
         } catch (e) {
-          _addDebug('Response not JSON: $e');
+          // _addDebug('Response not JSON: $e');
           // Not JSON: treat entire body as plain text
           if (response.body.trim().isNotEmpty) {
             reply = response.body.trim();
@@ -367,20 +389,30 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _registerIP() async {
     try {
       final ip = (await NetworkInterface.list()).first.addresses.first.address;
+      final ttsBase = _config['tts'] ?? await ConfigManager.getTtsServerUrl();
+      final registerUri = Uri.parse('$ttsBase/register-ip');
       await http.post(
-        Uri.parse('http://192.168.123.128:5001/register-ip'), // Flask server IP
+        registerUri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'ip': ip}),
       );
     } catch (e) {
       _addDebug('IP registration failed: $e');
-      // print('IP registration failed: $e');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Home AI Max'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _showConfigDialog,
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Center(
           child: Padding(
@@ -401,7 +433,7 @@ class _MainScreenState extends State<MainScreen> {
                       final msg = _feedbackMessage!;
                       Color color;
                       final lower = msg.toLowerCase();
-                      if (msg.startsWith('Message sent')) {
+                      if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
                         color = Colors.greenAccent;
                       } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
                         color = Colors.redAccent;
@@ -425,7 +457,7 @@ class _MainScreenState extends State<MainScreen> {
                   alignment: Alignment.bottomLeft,
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.7),
+                    color: Color.fromARGB((0.7 * 255).round(), 0, 0, 0),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   constraints: const BoxConstraints(maxHeight: 120),
@@ -444,6 +476,91 @@ class _MainScreenState extends State<MainScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Future<void> _showConfigDialog() async {
+    final webhook = await ConfigManager.getWebhookUrl();
+    final tts = await ConfigManager.getTtsServerUrl();
+    if (!mounted) return;
+    final webhookCtrl = TextEditingController(text: webhook);
+    final ttsCtrl = TextEditingController(text: tts);
+    final formKey = GlobalKey<FormState>();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Settings'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: webhookCtrl,
+                decoration: const InputDecoration(labelText: 'Webhook URL'),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return 'Webhook cannot be empty';
+                  if (!v.startsWith('http')) return 'Must be a valid URL';
+                  return null;
+                },
+              ),
+              TextFormField(
+                controller: ttsCtrl,
+                decoration: const InputDecoration(labelText: 'TTS Server URL'),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return 'TTS server cannot be empty';
+                  if (!v.startsWith('http')) return 'Must be a valid URL';
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              if (mounted) Navigator.of(context).pop();
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              if (formKey.currentState?.validate() != true) return;
+              final newWebhook = webhookCtrl.text.trim();
+              final newTts = ttsCtrl.text.trim();
+              await ConfigManager.setConfigValue('webhook_url', newWebhook);
+              await ConfigManager.setConfigValue('tts_server_url', newTts);
+              // Ensure the state is still mounted before using the State's context
+              if (!mounted) return;
+              Navigator.of(this.context).pop();
+              _addDebug('Settings saved');
+              // refresh in-memory config cache
+              await _initConfig();
+              // user-visible confirmation
+              if (mounted) {
+                ScaffoldMessenger.of(this.context).showSnackBar(
+                  const SnackBar(content: Text('Settings saved')),
+                );
+              }
+            },
+            child: const Text('Save'),
+          ),
+          TextButton(
+            onPressed: () async {
+              // Reset stored values to defaults
+              await _resetToDefaults();
+              if (!mounted) return;
+              Navigator.of(this.context).pop();
+              _addDebug('Settings reset to defaults');
+              ScaffoldMessenger.of(this.context).showSnackBar(
+                const SnackBar(content: Text('Settings reset to defaults')),
+              );
+            },
+            child: const Text('Reset'),
+          ),
+        ],
       ),
     );
   }
@@ -491,7 +608,7 @@ class _MainScreenState extends State<MainScreen> {
           boxShadow: _isListening
               ? [
                   BoxShadow(
-                    color: Colors.redAccent.withOpacity(0.6),
+                    color: Color.fromARGB((0.6 * 255).round(), 255, 82, 82),
                     blurRadius: 16,
                     spreadRadius: 2,
                   ),
@@ -506,6 +623,3 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 }
-
-
-  // ...existing code...

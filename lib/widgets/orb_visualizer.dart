@@ -70,7 +70,7 @@ class _OrbVisualizerState extends State<OrbVisualizer> with SingleTickerProvider
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF7A6FF8).withOpacity(widget.isSpeaking ? 0.95 : 0.45),
+                  color: Color.fromARGB(((widget.isSpeaking ? 0.95 : 0.45) * 255).round(), 0x7A, 0x6F, 0xF8),
                   blurRadius: widget.isSpeaking ? 48 : 26,
                   spreadRadius: widget.isSpeaking ? 8 : 4,
                   offset: const Offset(0, 10),
@@ -108,7 +108,7 @@ class _BarsPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.white.withOpacity(active ? 0.95 : 0.7);
+  final paint = Paint()..color = Color.fromARGB(((active ? 0.95 : 0.7) * 255).round(), 255, 255, 255);
     final barWidth = size.width / (barCount * 1.9);
     final gap = barWidth * 0.7;
     final baseY = size.height;
