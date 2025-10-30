@@ -1,11 +1,11 @@
 /*
   File:        lib/main.dart
-  Author:      Colin Bond
+  Version:     3.3.5 (modified AI response timeout to be more generous, 20 seconds instead of 5)
+  Author:      Colin Fajardo
   Description: Main application file for Home AI Max Flutter app.
 */
 
 import 'package:flutter/material.dart';
-
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
@@ -156,6 +156,16 @@ class _MainScreenState extends State<MainScreen> {
           final body = await utf8.decoder.bind(request).join();
           _addDebug('Incoming $method $path');
           _addDebug('Incoming body: $body');
+          //
+          if (method == 'HEAD' && path == '/notify') {
+            request.response.statusCode = 200;
+            request.response.headers.set('Access-Control-Allow-Origin', '*');
+            request.response.write('');
+            _addDebug('Handled HEAD request for /notify');
+            await request.response.close();
+            return;
+          }
+          //
           if (method == 'POST' && path == '/notify') {
             try {
               final data = jsonDecode(body);
@@ -262,7 +272,8 @@ class _MainScreenState extends State<MainScreen> {
         Uri.parse(webhookUrl),
         headers: headers,
         body: encodedBody,
-      ).timeout(const Duration(seconds: 5));
+      // Timeout modified from 5 to 20 seconds for AI with reasoning effort
+      ).timeout(const Duration(seconds: 20));
       _addDebug('Response: ${response.statusCode} ${response.reasonPhrase}');
       if (response.statusCode >= 200 && response.statusCode < 300) {
         // Log response details for debugging
