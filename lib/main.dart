@@ -1,8 +1,14 @@
 /*
   File:        lib/main.dart
-  Version:     3.3.5 (modified AI response timeout to be more generous, 20 seconds instead of 5)
+  
   Author:      Colin Fajardo
-  Description: Main application file for Home AI Max Flutter app.
+
+  Version:     3.3.6
+               - removed mic button and added its functionality to the orb, turns red and expands when listening
+               - added the ability to toggle visibility of the debug log via settings, off by default for concise UI
+               - slightly modified tts server url setting logic to not automatically assume and add a '/tts' suffix
+  
+  Description: Main file that assembles and controls the logic of the Home AI Max Flutter app.
 */
 
 import 'package:flutter/material.dart';
@@ -63,6 +69,7 @@ class _MainScreenState extends State<MainScreen> {
   late final AudioPlayer _audioPlayer;
   // Centralized in-memory config cache (loaded once on init)
   final Map<String, String> _config = {};
+  bool _debugLogVisible = false;
 
   void _addDebug(String message) {
     setState(() {
@@ -107,11 +114,13 @@ class _MainScreenState extends State<MainScreen> {
     try {
       final webhook = await ConfigManager.getWebhookUrl();
       final tts = await ConfigManager.getTtsServerUrl();
+      final debugVisible = await ConfigManager.getDebugLogVisible();
       setState(() {
         _config['webhook'] = webhook;
         _config['tts'] = tts;
+        _debugLogVisible = debugVisible;
       });
-  _addDebug('Config loaded: webhook=$webhook tts=$tts');
+  _addDebug('Config loaded: webhook=$webhook tts=$tts debugVisible=$debugVisible');
     } catch (e) {
       _addDebug('Failed to load config: $e');
     }
@@ -213,7 +222,7 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _requestAndPlayTts(String text) async {
     try {
       final ttsBase = _config['tts'] ?? await ConfigManager.getTtsServerUrl();
-      final uri = Uri.parse('$ttsBase/tts');
+      final uri = Uri.parse(ttsBase);
       _addDebug('Requesting TTS from $uri');
       final resp = await http.post(uri,
         headers: {'Content-Type': 'application/json'},
@@ -431,8 +440,13 @@ class _MainScreenState extends State<MainScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Orb visual (animates when speaking)
-                OrbVisualizer(isSpeaking: _isSpeaking, size: 120),
+                // Orb visual (animates when speaking or listening)
+                OrbVisualizer(
+                  isSpeaking: _isSpeaking,
+                  isListening: _isListening,
+                  size: 120,
+                  onTap: _isLoading ? null : _toggleListening,
+                ),
                 const SizedBox(height: 48),
                 _buildTextInput(context),
                 const SizedBox(height: 16),
@@ -463,26 +477,27 @@ class _MainScreenState extends State<MainScreen> {
                     }),
                   ),
                 const SizedBox(height: 24),
-                // Debug log area
-                Container(
-                  alignment: Alignment.bottomLeft,
-                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                  decoration: BoxDecoration(
-                    color: Color.fromARGB((0.7 * 255).round(), 0, 0, 0),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  constraints: const BoxConstraints(maxHeight: 120),
-                  child: SingleChildScrollView(
-                    reverse: true,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: _debugLog.map((msg) => Text(
-                        msg,
-                        style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
-                      )).toList(),
+                // Debug log area (only shown if enabled)
+                if (_debugLogVisible)
+                  Container(
+                    alignment: Alignment.bottomLeft,
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: Color.fromARGB((0.7 * 255).round(), 0, 0, 0),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    constraints: const BoxConstraints(maxHeight: 120),
+                    child: SingleChildScrollView(
+                      reverse: true,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: _debugLog.map((msg) => Text(
+                          msg,
+                          style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
+                        )).toList(),
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
@@ -494,9 +509,11 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _showConfigDialog() async {
     final webhook = await ConfigManager.getWebhookUrl();
     final tts = await ConfigManager.getTtsServerUrl();
+    final debugVisible = await ConfigManager.getDebugLogVisible();
     if (!mounted) return;
     final webhookCtrl = TextEditingController(text: webhook);
     final ttsCtrl = TextEditingController(text: tts);
+    bool debugLogVisible = debugVisible;
     final formKey = GlobalKey<FormState>();
     showDialog(
       context: context,
@@ -508,6 +525,7 @@ class _MainScreenState extends State<MainScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              const SizedBox(height: 20),
               TextFormField(
                 controller: webhookCtrl,
                 decoration: const InputDecoration(labelText: 'Webhook URL'),
@@ -517,6 +535,7 @@ class _MainScreenState extends State<MainScreen> {
                   return null;
                 },
               ),
+              const SizedBox(height: 20),
               TextFormField(
                 controller: ttsCtrl,
                 decoration: const InputDecoration(labelText: 'TTS Server URL'),
@@ -525,6 +544,19 @@ class _MainScreenState extends State<MainScreen> {
                   if (!v.startsWith('http')) return 'Must be a valid URL';
                   return null;
                 },
+              ),
+              const SizedBox(height: 20),
+              StatefulBuilder(
+                builder: (context, setState) => SwitchListTile(
+                  title: const Text('Show Debug Log'),
+                  subtitle: const Text('Display debug information at the bottom'),
+                  value: debugLogVisible,
+                  onChanged: (value) {
+                    setState(() {
+                      debugLogVisible = value;
+                    });
+                  },
+                ),
               ),
             ],
           ),
@@ -543,6 +575,7 @@ class _MainScreenState extends State<MainScreen> {
               final newTts = ttsCtrl.text.trim();
               await ConfigManager.setConfigValue('webhook_url', newWebhook);
               await ConfigManager.setConfigValue('tts_server_url', newTts);
+              await ConfigManager.setDebugLogVisible(debugLogVisible);
               // Ensure the state is still mounted before using the State's context
               if (!mounted) return;
               Navigator.of(this.context).pop();
@@ -562,6 +595,7 @@ class _MainScreenState extends State<MainScreen> {
             onPressed: () async {
               // Reset stored values to defaults
               await _resetToDefaults();
+              await ConfigManager.setDebugLogVisible(false); // Reset debug log to default (disabled)
               if (!mounted) return;
               Navigator.of(this.context).pop();
               _addDebug('Settings reset to defaults');
@@ -595,42 +629,12 @@ class _MainScreenState extends State<MainScreen> {
           ),
         ),
         const SizedBox(width: 8),
-        _buildMicButton(context),
-        const SizedBox(width: 8),
         IconButton(
           icon: const Icon(Icons.send_rounded),
           color: Theme.of(context).colorScheme.primary,
           onPressed: _controller.text.trim().isEmpty || _isLoading || _isListening ? null : _sendText,
         ),
       ],
-    );
-  }
-
-  Widget _buildMicButton(BuildContext context) {
-    return GestureDetector(
-      onTap: _isLoading ? null : _toggleListening,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: _isListening ? Colors.redAccent : Colors.grey[800],
-          shape: BoxShape.circle,
-          boxShadow: _isListening
-              ? [
-                  BoxShadow(
-                    color: Color.fromARGB((0.6 * 255).round(), 255, 82, 82),
-                    blurRadius: 16,
-                    spreadRadius: 2,
-                  ),
-                ]
-              : [],
-        ),
-        child: Icon(
-          _isListening ? Icons.mic : Icons.mic_none,
-          color: Colors.white,
-        ),
-      ),
     );
   }
 }

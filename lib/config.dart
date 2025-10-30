@@ -12,8 +12,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ConfigManager {
   static const String _keyWebhook = 'webhook_url';
   static const String _keyTts = 'tts_server_url';
+  static const String _keyDebugLogVisible = 'debug_log_visible';
   static const String defaultWebhookUrl = 'http://192.168.123.199:8123/api/webhook/chatgpt_ask';
-  static const String defaultTtsUrl = 'http://192.168.123.128:5001';
+  static const String defaultTtsUrl = 'http://192.168.123.128:5001/tts';
 
   /// Return a friendly string describing where settings are stored.
   /// Previously this used a visible config.txt; now we store settings in
@@ -33,8 +34,18 @@ class ConfigManager {
     return prefs.getString(_keyTts) ?? defaultTtsUrl;
   }
 
+  static Future<bool> getDebugLogVisible() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyDebugLogVisible) ?? false; // Default to false (disabled)
+  }
+
   static Future<void> setConfigValue(String key, String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(key, value);
+  }
+
+  static Future<void> setDebugLogVisible(bool visible) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyDebugLogVisible, visible);
   }
 }
