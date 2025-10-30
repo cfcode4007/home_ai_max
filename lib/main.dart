@@ -3,10 +3,8 @@
   
   Author:      Colin Fajardo
 
-  Version:     3.3.6
-               - removed mic button and added its functionality to the orb, turns red and expands when listening
-               - added the ability to toggle visibility of the debug log via settings, off by default for concise UI
-               - slightly modified tts server url setting logic to not automatically assume and add a '/tts' suffix
+  Version:     3.3.7
+               - added an auto send setting that, when enabled, will automatically send the recognized speech after a pause in speech
   
   Description: Main file that assembles and controls the logic of the Home AI Max Flutter app.
 */
@@ -70,6 +68,7 @@ class _MainScreenState extends State<MainScreen> {
   // Centralized in-memory config cache (loaded once on init)
   final Map<String, String> _config = {};
   bool _debugLogVisible = false;
+  bool _autoSendSpeech = false;
 
   void _addDebug(String message) {
     setState(() {
@@ -115,12 +114,14 @@ class _MainScreenState extends State<MainScreen> {
       final webhook = await ConfigManager.getWebhookUrl();
       final tts = await ConfigManager.getTtsServerUrl();
       final debugVisible = await ConfigManager.getDebugLogVisible();
+      final autoSend = await ConfigManager.getAutoSendSpeech();
       setState(() {
         _config['webhook'] = webhook;
         _config['tts'] = tts;
         _debugLogVisible = debugVisible;
+        _autoSendSpeech = autoSend;
       });
-  _addDebug('Config loaded: webhook=$webhook tts=$tts debugVisible=$debugVisible');
+  _addDebug('Config loaded: webhook=$webhook tts=$tts debugVisible=$debugVisible autoSend=$autoSend');
     } catch (e) {
       _addDebug('Failed to load config: $e');
     }
@@ -372,6 +373,11 @@ class _MainScreenState extends State<MainScreen> {
               _isListening = false;
             });
             _addDebug('Listening stopped (mic button)');
+            // Auto-send if enabled and there's text to send
+            if (_autoSendSpeech && _controller.text.trim().isNotEmpty) {
+              _addDebug('Auto-sending speech: "${_controller.text.trim()}"');
+              _sendText();
+            }
           }
         },
         onError: (error) {
@@ -510,10 +516,12 @@ class _MainScreenState extends State<MainScreen> {
     final webhook = await ConfigManager.getWebhookUrl();
     final tts = await ConfigManager.getTtsServerUrl();
     final debugVisible = await ConfigManager.getDebugLogVisible();
+    final autoSend = await ConfigManager.getAutoSendSpeech();
     if (!mounted) return;
     final webhookCtrl = TextEditingController(text: webhook);
     final ttsCtrl = TextEditingController(text: tts);
     bool debugLogVisible = debugVisible;
+    bool autoSendSpeech = autoSend;
     final formKey = GlobalKey<FormState>();
     showDialog(
       context: context,
@@ -549,11 +557,22 @@ class _MainScreenState extends State<MainScreen> {
               StatefulBuilder(
                 builder: (context, setState) => SwitchListTile(
                   title: const Text('Show Debug Log'),
-                  subtitle: const Text('Display debug information at the bottom'),
                   value: debugLogVisible,
                   onChanged: (value) {
                     setState(() {
                       debugLogVisible = value;
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(height: 6),
+              StatefulBuilder(
+                builder: (context, setState) => SwitchListTile(
+                  title: const Text('Auto-send Speech'),
+                  value: autoSendSpeech,
+                  onChanged: (value) {
+                    setState(() {
+                      autoSendSpeech = value;
                     });
                   },
                 ),
@@ -576,6 +595,7 @@ class _MainScreenState extends State<MainScreen> {
               await ConfigManager.setConfigValue('webhook_url', newWebhook);
               await ConfigManager.setConfigValue('tts_server_url', newTts);
               await ConfigManager.setDebugLogVisible(debugLogVisible);
+              await ConfigManager.setAutoSendSpeech(autoSendSpeech);
               // Ensure the state is still mounted before using the State's context
               if (!mounted) return;
               Navigator.of(this.context).pop();
@@ -596,6 +616,7 @@ class _MainScreenState extends State<MainScreen> {
               // Reset stored values to defaults
               await _resetToDefaults();
               await ConfigManager.setDebugLogVisible(false); // Reset debug log to default (disabled)
+              await ConfigManager.setAutoSendSpeech(false); // Reset auto-send speech to default (disabled)
               if (!mounted) return;
               Navigator.of(this.context).pop();
               _addDebug('Settings reset to defaults');

@@ -1,19 +1,11 @@
-/*
-  File:        lib/config.dart
-  Author:      Colin Bond
-  
-  Description: Config manager for Home AI Max.
-               Stores application settings in SharedPreferences (in-app settings).
-               Public API preserved: getWebhookUrl(), getTtsServerUrl(), setConfigValue(), getConfigFilePath().
-*/
-
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ConfigManager {
   static const String _keyWebhook = 'webhook_url';
   static const String _keyTts = 'tts_server_url';
   static const String _keyDebugLogVisible = 'debug_log_visible';
-  static const String defaultWebhookUrl = 'http://192.168.123.199:8123/api/webhook/chatgpt_ask';
+  static const String _keyAutoSendSpeech = 'auto_send_speech';
+  static const String defaultWebhookUrl = 'http://192.168.123.199:5001/hagpt';
   static const String defaultTtsUrl = 'http://192.168.123.128:5001/tts';
 
   /// Return a friendly string describing where settings are stored.
@@ -39,6 +31,11 @@ class ConfigManager {
     return prefs.getBool(_keyDebugLogVisible) ?? false; // Default to false (disabled)
   }
 
+  static Future<bool> getAutoSendSpeech() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyAutoSendSpeech) ?? false; // Default to false (manual send)
+  }
+
   static Future<void> setConfigValue(String key, String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(key, value);
@@ -47,5 +44,10 @@ class ConfigManager {
   static Future<void> setDebugLogVisible(bool visible) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyDebugLogVisible, visible);
+  }
+
+  static Future<void> setAutoSendSpeech(bool autoSend) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyAutoSendSpeech, autoSend);
   }
 }
