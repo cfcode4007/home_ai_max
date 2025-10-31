@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 
 /// OrbVisualizer shows a glowing orb that animates when [isSpeaking] is true.
@@ -52,7 +54,12 @@ class _OrbVisualizerState extends State<OrbVisualizer> with SingleTickerProvider
   Widget build(BuildContext context) {
     final size = widget.size;
     final isActive = widget.isSpeaking || widget.isListening;
-    final displaySize = isActive ? size * 1.1 : size;
+    final shouldPulse = widget.isSpeaking; // Only pulse when speaking
+    final baseDisplaySize = isActive ? size * 1.1 : size;
+    
+    // Create pulsing effect only when speaking
+    final pulseFactor = shouldPulse ? (0.95 + 0.1 * (1 + sin(_ctrl.value * 2 * 3.14159))) : 1.0;
+    final displaySize = baseDisplaySize * pulseFactor;
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -85,8 +92,8 @@ class _OrbVisualizerState extends State<OrbVisualizer> with SingleTickerProvider
                     color: widget.isListening
                         ? Color.fromARGB(((isActive ? 0.95 : 0.45) * 255).round(), 0xFF, 0x52, 0x52)
                         : Color.fromARGB(((isActive ? 0.95 : 0.45) * 255).round(), 0x7A, 0x6F, 0xF8),
-                    blurRadius: isActive ? 48 : 26,
-                    spreadRadius: isActive ? 8 : 4,
+                    blurRadius: shouldPulse ? 48 + 12 * pulseFactor : (isActive ? 48 : 26),
+                    spreadRadius: shouldPulse ? 8 + 4 * pulseFactor : (isActive ? 8 : 4),
                     offset: const Offset(0, 10),
                   ),
                 ],
@@ -94,9 +101,14 @@ class _OrbVisualizerState extends State<OrbVisualizer> with SingleTickerProvider
             ),
             // Center icon
             Transform.scale(
-              scale: isActive ? 1.05 : 1.0,
+              scale: shouldPulse ? 1.05 + 0.05 * pulseFactor : (isActive ? 1.05 : 1.0),
+              // child: Icon(
+              //   widget.isListening ? Icons.mic : Icons.bubble_chart_rounded,
+              //   size: 42,
+              //   color: Colors.white,
+              // ),
               child: Icon(
-                widget.isListening ? Icons.mic : Icons.bubble_chart_rounded,
+                widget.isListening ? Icons.mic : Icons.museum,
                 size: 42,
                 color: Colors.white,
               ),
