@@ -3,11 +3,12 @@
   
   Author:      Colin Fajardo
 
-  Version:     3.3.7
-               - added an auto send setting that, when enabled, will automatically send the recognized speech after a pause in speech
+  Version:     3.3.8
+               - fixed misconfigured subtitles, now reads the AI reply instead of just "Message sent successfully"
   
-  Description: Main file that assembles and controls the logic of the Home AI Max Flutter app.
+  Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
+
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -18,6 +19,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'widgets/orb_visualizer.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
+
 
 void main() {
   runApp(const HomeAIMaxApp());
@@ -59,13 +61,11 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
-  // Debug log state
   final List<String> _debugLog = [];
   bool _isSpeaking = false;
   late final FlutterTts _tts;
   HttpServer? _server;
   late final AudioPlayer _audioPlayer;
-  // Centralized in-memory config cache (loaded once on init)
   final Map<String, String> _config = {};
   bool _debugLogVisible = false;
   bool _autoSendSpeech = false;
@@ -78,6 +78,7 @@ class _MainScreenState extends State<MainScreen> {
       }
     });
   }
+
   @override
   void initState() {
     super.initState();
@@ -105,8 +106,6 @@ class _MainScreenState extends State<MainScreen> {
       setState(() => _isSpeaking = false);
       _addDebug('TTS: error handler called: $msg');
     });
-    // Optional: get TTS engine status
-  _tts.getEngines.then((engines) => _addDebug('Available TTS engines: $engines')).catchError((e) => _addDebug('Error getting TTS engines: $e'));
   }
 
   Future<void> _initConfig() async {
@@ -220,142 +219,6 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  Future<void> _requestAndPlayTts(String text) async {
-    try {
-      final ttsBase = _config['tts'] ?? await ConfigManager.getTtsServerUrl();
-      final uri = Uri.parse(ttsBase);
-      _addDebug('Requesting TTS from $uri');
-      final resp = await http.post(uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'text': text}),
-      ).timeout(const Duration(seconds: 8));
-      _addDebug('TTS response: ${resp.statusCode} ${resp.reasonPhrase}');
-      _addDebug('TTS response headers: ${resp.headers}');
-      if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        final contentType = resp.headers['content-type'] ?? '';
-        if (contentType.contains('audio') && resp.bodyBytes.isNotEmpty) {
-          _addDebug('Playing returned audio (${resp.bodyBytes.length} bytes)');
-          setState(() => _isSpeaking = true);
-          try {
-            await _audioPlayer.play(BytesSource(resp.bodyBytes));
-          } catch (e) {
-            _addDebug('AudioPlayer.play error: $e');
-            // fallback to local TTS
-            await _speakReply(text);
-          }
-        } else {
-          // Not audio: maybe JSON with text reply
-          _addDebug('TTS response is not audio, falling back to local TTS');
-          String? reply;
-          try {
-            final decoded = jsonDecode(resp.body);
-            if (decoded is Map) reply = decoded['reply'] ?? decoded['message'] ?? decoded['text'];
-          } catch (_) {
-            // ignore
-          }
-          await _speakReply(reply ?? text);
-        }
-      } else {
-        _addDebug('TTS request failed: ${resp.statusCode}');
-        await _speakReply(text);
-      }
-    } catch (e) {
-      _addDebug('Error requesting TTS: $e');
-      await _speakReply(text);
-    }
-  }
-
-  Future<void> _sendText() async {
-    final text = _controller.text.trim();
-    final encodedBody = jsonEncode({'query': text});
-    final headers = {'Content-Type': 'application/json'};
-    if (text.isEmpty) return;
-    setState(() {
-      _isLoading = true;
-      _feedbackMessage = null;
-    });
-    try {
-  final webhookUrl = _config['webhook'] ?? await ConfigManager.getWebhookUrl();
-  _addDebug('Sending to webhook: $webhookUrl');
-      _addDebug('Payload: $encodedBody');
-      final response = await http.post(
-        Uri.parse(webhookUrl),
-        headers: headers,
-        body: encodedBody,
-      // Timeout modified from 5 to 20 seconds for AI with reasoning effort
-      ).timeout(const Duration(seconds: 20));
-      _addDebug('Response: ${response.statusCode} ${response.reasonPhrase}');
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        // Log response details for debugging
-        _addDebug('Response body: ${response.body}');
-        _addDebug('Response headers: ${response.headers}');
-        
-        String? reply;        
-        // Try to parse reply text from the response body
-        try {
-          final decoded = jsonDecode(response.body);
-          _addDebug('Response JSON decoded');
-          if (decoded is Map) {
-            reply = decoded['reply'] ?? decoded['message'] ?? decoded['text'] ?? decoded['response'];
-            _addDebug('Extracted reply key value: $reply');
-          } else if (decoded is String) {
-            reply = decoded;
-            _addDebug('Decoded response is string');
-          }
-        } catch (e) {
-          // _addDebug('Response not JSON: $e');
-          // Not JSON: treat entire body as plain text
-          if (response.body.trim().isNotEmpty) {
-            reply = response.body.trim();
-            _addDebug('Using raw body as reply: $reply');
-          }
-        }
-
-        if (reply != null && reply.isNotEmpty) {
-          _addDebug('Server reply: $reply');
-          // ensure the orb animates immediately while we attempt to speak
-          setState(() => _isSpeaking = true);
-          _speakReply(reply);
-        } else {
-          setState(() {
-            _feedbackMessage = 'Message sent successfully! (no reply)';
-          });
-        }
-        setState(() {
-          _feedbackMessage = 'Message sent successfully!';
-        });
-        _controller.clear();
-      } else {
-        setState(() {
-          _feedbackMessage = 'Failed to send: \n${response.statusCode} ${response.reasonPhrase}';
-        });
-      }
-    } catch (e) {
-      _addDebug('Error sending: $e');
-      setState(() {
-        _feedbackMessage = 'Error: \n${e.toString()}';
-      });
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _speakReply(String text) async {
-    try {
-      _addDebug('TTS: preparing to speak');
-      await _tts.setLanguage('en-US');
-      await _tts.setPitch(1.0);
-      final speakResult = await _tts.speak(text);
-      _addDebug('TTS.speak returned: $speakResult');
-      // some platforms return immediately and call completion handler later
-    } catch (e, st) {
-      _addDebug('TTS speak error: $e\n$st');
-      setState(() => _isSpeaking = false);
-    }
-  }
-
   Future<void> _toggleListening() async {
     if (_isListening) {
       _addDebug('Mic button pressed: stopping listening');
@@ -412,6 +275,83 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
+  Future<void> _sendText() async {
+    final text = _controller.text.trim();
+    final encodedBody = jsonEncode({'query': text});
+    final headers = {'Content-Type': 'application/json'};
+    if (text.isEmpty) return;
+    setState(() {
+      _isLoading = true;
+      _feedbackMessage = null;
+    });
+    try {
+      final webhookUrl = _config['webhook'] ?? await ConfigManager.getWebhookUrl();
+      _addDebug('Sending to webhook: $webhookUrl');
+      _addDebug('Payload: $encodedBody');
+      final response = await http.post(
+        Uri.parse(webhookUrl),
+        headers: headers,
+        body: encodedBody,
+      // Timeout modified from 5 to 20 seconds for AI with reasoning effort
+      ).timeout(const Duration(seconds: 20));
+      _addDebug('Response: ${response.statusCode} ${response.reasonPhrase}');
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        // Log response details for debugging
+        _addDebug('Response body: ${response.body}');
+        _addDebug('Response headers: ${response.headers}');
+        
+        String? reply;        
+        // Try to parse reply text from the response body
+        try {
+          final decoded = jsonDecode(response.body);
+          _addDebug('Response JSON decoded');
+          if (decoded is Map) {
+            reply = decoded['reply'] ?? decoded['message'] ?? decoded['text'] ?? decoded['response'];
+            _addDebug('Extracted reply key value: $reply');
+          } else if (decoded is String) {
+            reply = decoded;
+            _addDebug('Decoded response is string');
+          }
+        } catch (e) {
+          // _addDebug('Response not JSON: $e');
+          // Not JSON: treat entire body as plain text
+          if (response.body.trim().isNotEmpty) {
+            reply = response.body.trim();
+            _addDebug('Using raw body as reply: $reply');
+          }
+        }
+
+        if (reply != null && reply.isNotEmpty) {
+          _addDebug('Server reply: $reply');
+          // ensure the orb animates immediately while we attempt to speak
+          setState(() => _isSpeaking = true);
+          _speakReply(reply);
+        } else {
+          setState(() {
+            _feedbackMessage = 'Message sent successfully! (no reply)';
+          });
+        }        
+        setState(() {
+          _feedbackMessage = '$reply';
+        });
+        _controller.clear();
+      } else {
+        setState(() {
+          _feedbackMessage = 'Failed to send: \n${response.statusCode} ${response.reasonPhrase}';
+        });
+      }
+    } catch (e) {
+      _addDebug('Error sending: $e');
+      setState(() {
+        _feedbackMessage = 'Error: \n${e.toString()}';
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
   Future<void> _registerIP() async {
     try {
       final ip = (await NetworkInterface.list()).first.addresses.first.address;
@@ -424,6 +364,65 @@ class _MainScreenState extends State<MainScreen> {
       );
     } catch (e) {
       _addDebug('IP registration failed: $e');
+    }
+  }
+
+  Future<void> _requestAndPlayTts(String text) async {
+    try {
+      final ttsBase = _config['tts'] ?? await ConfigManager.getTtsServerUrl();
+      final uri = Uri.parse(ttsBase);
+      _addDebug('Requesting TTS from $uri');
+      final resp = await http.post(uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'text': text}),
+      ).timeout(const Duration(seconds: 8));
+      _addDebug('TTS response: ${resp.statusCode} ${resp.reasonPhrase}');
+      _addDebug('TTS response headers: ${resp.headers}');
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        final contentType = resp.headers['content-type'] ?? '';
+        if (contentType.contains('audio') && resp.bodyBytes.isNotEmpty) {
+          _addDebug('Playing returned audio (${resp.bodyBytes.length} bytes)');
+          setState(() => _isSpeaking = true);
+          try {
+            await _audioPlayer.play(BytesSource(resp.bodyBytes));
+          } catch (e) {
+            _addDebug('AudioPlayer.play error: $e');
+            // fallback to local TTS
+            await _speakReply(text);
+          }
+        } else {
+          // Not audio: maybe JSON with text reply
+          _addDebug('TTS response is not audio, falling back to local TTS');
+          String? reply;
+          try {
+            final decoded = jsonDecode(resp.body);
+            if (decoded is Map) reply = decoded['reply'] ?? decoded['message'] ?? decoded['text'];
+          } catch (_) {
+            // ignore
+          }
+          await _speakReply(reply ?? text);
+        }
+      } else {
+        _addDebug('TTS request failed: ${resp.statusCode}');
+        await _speakReply(text);
+      }
+    } catch (e) {
+      _addDebug('Error requesting TTS: $e');
+      await _speakReply(text);
+    }
+  }
+
+  Future<void> _speakReply(String text) async {
+    try {
+      _addDebug('TTS: preparing to speak');
+      await _tts.setLanguage('en-US');
+      await _tts.setPitch(1.0);
+      final speakResult = await _tts.speak(text);
+      _addDebug('TTS.speak returned: $speakResult');
+      // some platforms return immediately and call completion handler later
+    } catch (e, st) {
+      _addDebug('TTS speak error: $e\n$st');
+      setState(() => _isSpeaking = false);
     }
   }
 
@@ -509,6 +508,34 @@ class _MainScreenState extends State<MainScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTextInput(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            minLines: 1,
+            maxLines: 5,
+            style: const TextStyle(fontSize: 18),
+            textInputAction: TextInputAction.send,
+            onSubmitted: (_) => _sendText(),
+            decoration: const InputDecoration(
+              hintText: 'Type your message...'
+            ),
+            onChanged: (_) => setState(() {}),
+            enabled: !_isLoading && !_isListening,
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.send_rounded),
+          color: Theme.of(context).colorScheme.primary,
+          onPressed: _controller.text.trim().isEmpty || _isLoading || _isListening ? null : _sendText,
+        ),
+      ],
     );
   }
 
@@ -628,34 +655,6 @@ class _MainScreenState extends State<MainScreen> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildTextInput(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: TextField(
-            controller: _controller,
-            minLines: 1,
-            maxLines: 5,
-            style: const TextStyle(fontSize: 18),
-            textInputAction: TextInputAction.send,
-            onSubmitted: (_) => _sendText(),
-            decoration: const InputDecoration(
-              hintText: 'Type your message...'
-            ),
-            onChanged: (_) => setState(() {}),
-            enabled: !_isLoading && !_isListening,
-          ),
-        ),
-        const SizedBox(width: 8),
-        IconButton(
-          icon: const Icon(Icons.send_rounded),
-          color: Theme.of(context).colorScheme.primary,
-          onPressed: _controller.text.trim().isEmpty || _isLoading || _isListening ? null : _sendText,
-        ),
-      ],
     );
   }
 }
