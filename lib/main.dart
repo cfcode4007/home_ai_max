@@ -3,9 +3,8 @@
   
   Author:      Colin Fajardo
 
-  Version:     3.3.9
-               - improved orb to be more animated and responsive to TTS, creating a livelier UI effect
-               - changed the icon inside of the orb to better represent "Home AI Max" theme
+  Version:     3.4.0
+               - modified orb animation and expansion not to shift the layout of text box and subtitles below it
   
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */

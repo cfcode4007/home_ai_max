@@ -60,12 +60,15 @@ class _OrbVisualizerState extends State<OrbVisualizer> with SingleTickerProvider
     // Create pulsing effect only when speaking
     final pulseFactor = shouldPulse ? (0.95 + 0.1 * (1 + sin(_ctrl.value * 2 * 3.14159))) : 1.0;
     final displaySize = baseDisplaySize * pulseFactor;
+    
+    // Fixed container size to prevent layout shifts (maximum possible size)
+    final maxSize = size * 1.1 * 1.05; // base active size * max pulse factor
 
     return GestureDetector(
       onTap: widget.onTap,
       child: SizedBox(
-        width: displaySize,
-        height: displaySize,
+        width: maxSize,
+        height: maxSize,
         child: Stack(
           alignment: Alignment.center,
           children: [
