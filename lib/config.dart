@@ -5,7 +5,7 @@ class ConfigManager {
   static const String _keyTts = 'tts_server_url';
   static const String _keyDebugLogVisible = 'debug_log_visible';
   static const String _keyAutoSendSpeech = 'auto_send_speech';
-  static const String defaultWebhookUrl = 'http://192.168.123.199:5001/hagpt';
+  static const String defaultWebhookUrl = 'http://192.168.123.128:5001/max';
   static const String defaultTtsUrl = 'http://192.168.123.128:5001/tts';
 
   /// Return a friendly string describing where settings are stored.
