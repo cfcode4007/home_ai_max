@@ -3,8 +3,8 @@
   
   Author:      Colin Fajardo
 
-  Version:     3.5.0
-               - landscape support for components like subtitles and debug log
+  Version:     3.5.1
+               - adjusted ui for landscape mode, settings do not work so hide them, keep the orb in the very center (despite subtitles)
   
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -145,6 +145,7 @@ class _MainScreenState extends State<MainScreen> {
   bool _isListening = false;
   String _lastRecognized = '';
   bool _autoSentThisSession = false;
+  Orientation? _previousOrientation;
 
   @override
   void dispose() {
@@ -426,25 +427,36 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      appBar: AppBar(
-        title: const Text('Home AI Max'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _showConfigDialog,
+    return OrientationBuilder(
+      builder: (context, orientation) {
+        final isLandscape = orientation == Orientation.landscape;
+        
+        // Close any open dialogs when switching to landscape
+        if (_previousOrientation != null && 
+            _previousOrientation != Orientation.landscape && 
+            orientation == Orientation.landscape) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            Navigator.of(context).popUntil((route) => route.isFirst);
+          });
+        }
+        _previousOrientation = orientation;
+        
+        return Scaffold(
+          appBar: isLandscape ? null : AppBar(
+            title: const Text('Home AI Max'),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.settings),
+                onPressed: _showConfigDialog,
+                tooltip: 'Settings',
+              ),
+            ],
           ),
-        ],
-      ),
-      body: SafeArea(
-        child: OrientationBuilder(
-          builder: (context, orientation) {
-            final isLandscape = orientation == Orientation.landscape;
-            return isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout();
-          },
-        ),
-      ),
+          body: SafeArea(
+            child: isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout(),
+          ),
+        );
+      },
     );
   }
 
@@ -468,7 +480,7 @@ class _MainScreenState extends State<MainScreen> {
             if (_isLoading) const CircularProgressIndicator(),
             if (_feedbackMessage != null && !_isLoading)
               Padding(
-                padding: const EdgeInsets.only(top: 8.0),
+                padding: const EdgeInsets.only(top: 12.0),
                 child: Builder(builder: (context) {
                   final msg = _feedbackMessage!;
                   Color color;
@@ -520,51 +532,60 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildLandscapeLayout() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Orb visual centered in landscape
-          OrbVisualizer(
+    return Stack(
+      children: [
+        // Orb visual fixed in center
+        Center(
+          child: OrbVisualizer(
             isSpeaking: _isSpeaking,
             isListening: _isListening,
             size: 120,
             onTap: _isLoading ? null : _toggleListening,
           ),
-          const SizedBox(height: 32),
-          if (_isLoading) const CircularProgressIndicator(),
-          if (_feedbackMessage != null && !_isLoading)
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
-                child: SingleChildScrollView(
-                  child: Builder(builder: (context) {
-                    final msg = _feedbackMessage!;
-                    Color color;
-                    final lower = msg.toLowerCase();
-                    if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
-                      color = Colors.greenAccent;
-                    } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
-                      color = Colors.redAccent;
-                    } else {
-                      // Normal server-returned text should be white
-                      color = Colors.white;
-                    }
-                    return Text(
-                      msg,
-                      style: TextStyle(
-                        color: color,
-                        fontWeight: FontWeight.w500,
-                        fontSize: 16,
-                      ),
-                      textAlign: TextAlign.center,
-                    );
-                  }),
+        ),
+        // Loading indicator and subtitles positioned below orb
+        Positioned(
+          left: 0,
+          right: 0,
+          top: MediaQuery.of(context).size.height / 2 + 80, // Position below the orb (orb size 120 + some spacing)
+          bottom: 0,
+          child: Column(
+            children: [
+              if (_isLoading) const CircularProgressIndicator(),
+              if (_feedbackMessage != null && !_isLoading)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
+                    child: SingleChildScrollView(
+                      child: Builder(builder: (context) {
+                        final msg = _feedbackMessage!;
+                        Color color;
+                        final lower = msg.toLowerCase();
+                        if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
+                          color = Colors.greenAccent;
+                        } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
+                          color = Colors.redAccent;
+                        } else {
+                          // Normal server-returned text should be white
+                          color = Colors.white;
+                        }
+                        return Text(
+                          msg,
+                          style: TextStyle(
+                            color: color,
+                            fontWeight: FontWeight.w500,
+                            fontSize: 16,
+                          ),
+                          textAlign: TextAlign.center,
+                        );
+                      }),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-        ],
-      ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -610,11 +631,7 @@ class _MainScreenState extends State<MainScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      useRootNavigator: true,
-      builder: (context) => Scaffold(
-        resizeToAvoidBottomInset: false,
-        backgroundColor: Colors.transparent,
-        body: AlertDialog(
+      builder: (context) => AlertDialog(
         title: const Text('Settings'),
         content: SingleChildScrollView(
           child: Form(
@@ -671,7 +688,6 @@ class _MainScreenState extends State<MainScreen> {
               // Show confirmation dialog
               final confirmed = await showDialog<bool>(
                 context: context,
-                useRootNavigator: true,
                 builder: (context) => AlertDialog(
                   title: const Text('Confirm Save'),
                   content: const Text('Save these settings?'),
@@ -717,7 +733,6 @@ class _MainScreenState extends State<MainScreen> {
               // Show confirmation dialog
               final confirmed = await showDialog<bool>(
                 context: context,
-                useRootNavigator: true,
                 builder: (context) => AlertDialog(
                   title: const Text('Confirm Reset'),
                   content: const Text('Reset all settings to defaults? This cannot be undone.'),
@@ -759,14 +774,12 @@ class _MainScreenState extends State<MainScreen> {
           )
         ],
       ),
-    ),
-  );
+    );
   }
 
   void _showDebugLogDialog() {
     showDialog(
       context: context,
-      useRootNavigator: true,
       builder: (context) => AlertDialog(
         title: const Text('Debug Log'),
         content: Container(
