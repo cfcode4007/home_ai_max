@@ -1,11 +1,13 @@
 /*
   File:        lib/main.dart
-  
+
   Author:      Colin Fajardo
 
-  Version:     3.5.1
-               - adjusted ui for landscape mode, settings do not work so hide them, keep the orb in the very center (despite subtitles)
-  
+  Version:     3.5.2
+               - can now receive 'speak' notifications, translate them with TTS server and fall back to local translation if unavailable
+               - some redundant and outdated code such as register ip and related items removed
+               - landscape mode has been vaulted due to causing issues with portrait mode
+
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
 
@@ -145,7 +147,6 @@ class _MainScreenState extends State<MainScreen> {
   bool _isListening = false;
   String _lastRecognized = '';
   bool _autoSentThisSession = false;
-  Orientation? _previousOrientation;
 
   @override
   void dispose() {
@@ -157,12 +158,11 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _startLocalServer() async {
-    // Skip local server on web platform - browsers cannot bind to network ports
+    // Skip local server on web platform, since browsers cannot bind to network ports
     if (kIsWeb) {
       _addDebug('Local server skipped on web platform');
       return;
     }
-
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, 5000);
       _addDebug('Local server listening on port 5000');
@@ -173,17 +173,7 @@ class _MainScreenState extends State<MainScreen> {
           final body = await utf8.decoder.bind(request).join();
           _addDebug('Incoming $method $path');
           _addDebug('Incoming body: $body');
-          //
-          if (method == 'HEAD' && path == '/notify') {
-            request.response.statusCode = 200;
-            request.response.headers.set('Access-Control-Allow-Origin', '*');
-            request.response.write('');
-            _addDebug('Handled HEAD request for /notify');
-            await request.response.close();
-            return;
-          }
-          //
-          if (method == 'POST' && path == '/notify') {
+          if (method == 'POST' && path == '/speak') {
             try {
               final data = jsonDecode(body);
               final message = (data['message'] ?? '').toString();
@@ -191,14 +181,14 @@ class _MainScreenState extends State<MainScreen> {
                 setState(() {
                   _feedbackMessage = message;
                 });
-                _addDebug('Received notify message: $message');
+                _addDebug('Received message: $message');
                 // Request TTS audio from configured Flask server and play it
                 await _requestAndPlayTts(message);
               } else {
-                _addDebug('Notify received but no message field');
+                _addDebug('Message received but no message field');
               }
             } catch (e) {
-              _addDebug('Error decoding notify JSON: $e');
+              _addDebug('Error decoding message JSON: $e');
             }
             request.response.statusCode = 200;
             request.response.headers.set('Access-Control-Allow-Origin', '*');
@@ -227,7 +217,9 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
+  // On orb press
   Future<void> _toggleListening() async {
+    // When it's already listening
     if (_isListening) {
       _addDebug('Mic button pressed: stopping listening');
       await _speech.stop();
@@ -235,6 +227,7 @@ class _MainScreenState extends State<MainScreen> {
         _isListening = false;
       });
       _addDebug('Listening stopped (mic button)');
+    // When not listening and needs to initialize
     } else {
       _addDebug('Mic button pressed: initializing listening');
       bool available = await _speech.initialize(
@@ -247,7 +240,7 @@ class _MainScreenState extends State<MainScreen> {
             // Auto-send only when speech recognition is truly complete ('done' status)
             // This prevents cutting off the last word when user pauses briefly
             // In landscape mode, always auto-send since there's no text input
-            final shouldAutoSend = MediaQuery.of(context).orientation == Orientation.landscape || 
+            final shouldAutoSend = MediaQuery.of(context).orientation == Orientation.landscape ||
                                  (_autoSendSpeech && _controller.text.trim().isNotEmpty);
             if (status == 'done' && shouldAutoSend && !_autoSentThisSession) {
               _autoSentThisSession = true;
@@ -263,11 +256,12 @@ class _MainScreenState extends State<MainScreen> {
           _addDebug('Listening error: ${error.errorMsg}');
         },
       );
+      // When not listening and already initialized
       if (available) {
         setState(() {
           _isListening = true;
           _controller.clear();
-          _autoSentThisSession = false; // Reset auto-send flag for new session
+          _autoSentThisSession = false;
         });
         _addDebug('Listening started (mic button)');
         _speech.listen(
@@ -300,7 +294,6 @@ class _MainScreenState extends State<MainScreen> {
     });
     try {
       final webhookUrl = _config['webhook'] ?? await ConfigManager.getWebhookUrl();
-      _addDebug('Sending to webhook: $webhookUrl');
       _addDebug('Payload: $encodedBody');
       final response = await http.post(
         Uri.parse(webhookUrl),
@@ -309,45 +302,58 @@ class _MainScreenState extends State<MainScreen> {
       // Timeout modified from 5 to 20 seconds for AI with reasoning effort
       ).timeout(const Duration(seconds: 20));
       _addDebug('Response: ${response.statusCode} ${response.reasonPhrase}');
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        // Log response details for debugging
-        _addDebug('Response body: ${response.body}');
-        _addDebug('Response headers: ${response.headers}');
-        
-        String? reply;        
-        // Try to parse reply text from the response body
+      if (response.statusCode >= 200 && response.statusCode < 300) {        
         try {
           final decoded = jsonDecode(response.body);
           _addDebug('Response JSON decoded');
-          if (decoded is Map) {
-            reply = decoded['reply'] ?? decoded['message'] ?? decoded['text'] ?? decoded['response'];
-            _addDebug('Extracted reply key value: $reply');
-          } else if (decoded is String) {
-            reply = decoded;
-            _addDebug('Decoded response is string');
+
+          if (decoded['status'] == 'ok') {
+            final message = decoded['message'] ?? '';
+            final audioB64 = decoded['audio_b64'];
+
+            if (message.isNotEmpty) {
+              _addDebug('Server reply: $message');
+              setState(() {
+                _feedbackMessage = message;
+              });
+
+              // Play audio if available
+              if (audioB64 != null && audioB64.isNotEmpty) {
+                _addDebug('Playing GTTS base64 audio from response');
+                setState(() => _isSpeaking = true);
+                try {
+                  // Decode base64 audio
+                  final audioBytes = base64Decode(audioB64);
+                  await _audioPlayer.play(BytesSource(audioBytes));
+                } catch (e) {
+                  _addDebug('Base64 audio playback error: $e');
+                  // Fallback to local TTS
+                  await _speakReply(message);
+                }
+              } else {
+                // No audio, use local TTS
+                setState(() => _isSpeaking = true);
+                await _speakReply(message);
+              }
+            } else {
+              setState(() {
+                _feedbackMessage = 'Message sent successfully! (no reply)';
+              });
+            }
+          } else {
+            // Error status from server
+            final errorMessage = decoded['message'] ?? 'Unknown error';
+            setState(() {
+              _feedbackMessage = 'Server error: $errorMessage';
+            });
           }
         } catch (e) {
-          // _addDebug('Response not JSON: $e');
-          // Not JSON: treat entire body as plain text
-          if (response.body.trim().isNotEmpty) {
-            reply = response.body.trim();
-            _addDebug('Using raw body as reply: $reply');
-          }
+          _addDebug('JSON parsing error: $e');
+          setState(() {
+            _feedbackMessage = 'Response parsing error: $e';
+          });
         }
 
-        if (reply != null && reply.isNotEmpty) {
-          _addDebug('Server reply: $reply');
-          // ensure the orb animates immediately while we attempt to speak
-          setState(() => _isSpeaking = true);
-          _speakReply(reply);
-        } else {
-          setState(() {
-            _feedbackMessage = 'Message sent successfully! (no reply)';
-          });
-        }        
-        setState(() {
-          _feedbackMessage = '$reply';
-        });
         _controller.clear();
       } else {
         setState(() {
@@ -390,7 +396,7 @@ class _MainScreenState extends State<MainScreen> {
             await _speakReply(text);
           }
         } else {
-          // Not audio: maybe JSON with text reply
+          // Not audio, maybe JSON with text reply
           _addDebug('TTS response is not audio, falling back to local TTS');
           String? reply;
           try {
@@ -413,6 +419,7 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _speakReply(String text) async {
     try {
+      _addDebug('TTS: using local TTS');
       _addDebug('TTS: preparing to speak');
       await _tts.setLanguage('en-US');
       await _tts.setPitch(1.0);
@@ -427,165 +434,86 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return OrientationBuilder(
-      builder: (context, orientation) {
-        final isLandscape = orientation == Orientation.landscape;
-        
-        // Close any open dialogs when switching to landscape
-        if (_previousOrientation != null && 
-            _previousOrientation != Orientation.landscape && 
-            orientation == Orientation.landscape) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            Navigator.of(context).popUntil((route) => route.isFirst);
-          });
-        }
-        _previousOrientation = orientation;
-        
-        return Scaffold(
-          appBar: isLandscape ? null : AppBar(
-            title: const Text('Home AI Max'),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.settings),
-                onPressed: _showConfigDialog,
-                tooltip: 'Settings',
-              ),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Home AI Max'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _showConfigDialog,
           ),
-          body: SafeArea(
-            child: isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout(),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildPortraitLayout() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Orb visual (animates when speaking or listening)
-            OrbVisualizer(
-              isSpeaking: _isSpeaking,
-              isListening: _isListening,
-              size: 120,
-              onTap: _isLoading ? null : _toggleListening,
-            ),
-            const SizedBox(height: 48),
-            _buildTextInput(context),
-            const SizedBox(height: 16),
-            if (_isLoading) const CircularProgressIndicator(),
-            if (_feedbackMessage != null && !_isLoading)
-              Padding(
-                padding: const EdgeInsets.only(top: 12.0),
-                child: Builder(builder: (context) {
-                  final msg = _feedbackMessage!;
-                  Color color;
-                  final lower = msg.toLowerCase();
-                  if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
-                    color = Colors.greenAccent;
-                  } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
-                    color = Colors.redAccent;
-                  } else {
-                    // Normal server-returned text should be white
-                    color = Colors.white;
-                  }
-                  return Text(
-                    msg,
-                    style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    textAlign: TextAlign.center,
-                  );
-                }),
-              ),
-            const SizedBox(height: 32),
-            // Debug log area (only shown if enabled)
-            if (_debugLogVisible)
-              Container(
-                alignment: Alignment.bottomLeft,
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                decoration: BoxDecoration(
-                  color: Color.fromARGB((0.7 * 255).round(), 0, 0, 0),
-                  borderRadius: BorderRadius.circular(8),
+        ],
+      ),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Orb visual (animates when speaking or listening)
+                OrbVisualizer(
+                  isSpeaking: _isSpeaking,
+                  isListening: _isListening,
+                  size: 120,
+                  onTap: _isLoading ? null : _toggleListening,
                 ),
-                constraints: const BoxConstraints(maxHeight: 120),
-                child: SingleChildScrollView(
-                  reverse: true,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: _debugLog.map((msg) => Text(
-                      msg,
-                      style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
-                    )).toList(),
+                const SizedBox(height: 48),
+                _buildTextInput(context),
+                const SizedBox(height: 16),
+                if (_isLoading) const CircularProgressIndicator(),
+                if (_feedbackMessage != null && !_isLoading)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Builder(builder: (context) {
+                      final msg = _feedbackMessage!;
+                      Color color;
+                      final lower = msg.toLowerCase();
+                      if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
+                        color = Colors.greenAccent;
+                      } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
+                        color = Colors.redAccent;
+                      } else {
+                        // Normal server-returned text should be white
+                        color = Colors.white;
+                      }
+                      return Text(
+                        msg,
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        textAlign: TextAlign.center,
+                      );
+                    }),
                   ),
-                ),
-              ),
-          ],
+                const SizedBox(height: 32),
+                // Debug log area (only shown if enabled)
+                if (_debugLogVisible)
+                  Container(
+                    alignment: Alignment.bottomLeft,
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: Color.fromARGB((0.7 * 255).round(), 0, 0, 0),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    constraints: const BoxConstraints(maxHeight: 120),
+                    child: SingleChildScrollView(
+                      reverse: true,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: _debugLog.map((msg) => Text(
+                          msg,
+                          style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
+                        )).toList(),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
-    );
-  }
-
-  Widget _buildLandscapeLayout() {
-    return Stack(
-      children: [
-        // Orb visual fixed in center
-        Center(
-          child: OrbVisualizer(
-            isSpeaking: _isSpeaking,
-            isListening: _isListening,
-            size: 120,
-            onTap: _isLoading ? null : _toggleListening,
-          ),
-        ),
-        // Loading indicator and subtitles positioned below orb
-        Positioned(
-          left: 0,
-          right: 0,
-          top: MediaQuery.of(context).size.height / 2 + 80, // Position below the orb (orb size 120 + some spacing)
-          bottom: 0,
-          child: Column(
-            children: [
-              if (_isLoading) const CircularProgressIndicator(),
-              if (_feedbackMessage != null && !_isLoading)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
-                    child: SingleChildScrollView(
-                      child: Builder(builder: (context) {
-                        final msg = _feedbackMessage!;
-                        Color color;
-                        final lower = msg.toLowerCase();
-                        if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
-                          color = Colors.greenAccent;
-                        } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
-                          color = Colors.redAccent;
-                        } else {
-                          // Normal server-returned text should be white
-                          color = Colors.white;
-                        }
-                        return Text(
-                          msg,
-                          style: TextStyle(
-                            color: color,
-                            fontWeight: FontWeight.w500,
-                            fontSize: 16,
-                          ),
-                          textAlign: TextAlign.center,
-                        );
-                      }),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ],
     );
   }
 
@@ -633,61 +561,72 @@ class _MainScreenState extends State<MainScreen> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('Settings'),
-        content: SingleChildScrollView(
-          child: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(height: 20),
-                TextFormField(
-                  controller: webhookCtrl,
-                  decoration: const InputDecoration(labelText: 'Webhook URL'),
-                  validator: (v) {
-                    if (v == null || v.trim().isEmpty) return 'Webhook cannot be empty';
-                    if (!v.startsWith('http')) return 'Must be a valid URL';
-                    return null;
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 20),
+              TextFormField(
+                controller: webhookCtrl,
+                decoration: const InputDecoration(labelText: 'Server Base URL'),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return 'Server URL cannot be empty';
+                  if (!v.startsWith('http')) return 'Must be a valid URL';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+              TextFormField(
+                controller: ttsCtrl,
+                decoration: const InputDecoration(labelText: 'TTS Server URL'),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return 'TTS server cannot be empty';
+                  if (!v.startsWith('http')) return 'Must be a valid URL';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+              StatefulBuilder(
+                builder: (context, setState) => SwitchListTile(
+                  title: const Text('Show Debug Log'),
+                  value: debugLogVisible,
+                  onChanged: (value) {
+                    setState(() {
+                      debugLogVisible = value;
+                    });
                   },
                 ),
-                const SizedBox(height: 20),
-                TextFormField(
-                  controller: ttsCtrl,
-                  decoration: const InputDecoration(labelText: 'TTS Server URL'),
-                  validator: (v) {
-                    if (v == null || v.trim().isEmpty) return 'TTS server cannot be empty';
-                    if (!v.startsWith('http')) return 'Must be a valid URL';
-                    return null;
+              ),
+              const SizedBox(height: 6),
+              StatefulBuilder(
+                builder: (context, setState) => SwitchListTile(
+                  title: const Text('Auto-send Speech'),
+                  value: autoSendSpeech,
+                  onChanged: (value) {
+                    setState(() {
+                      autoSendSpeech = value;
+                    });
                   },
                 ),
-                const SizedBox(height: 20),
-                StatefulBuilder(
-                  builder: (context, setState) => SwitchListTile(
-                    title: const Text('Auto-send Speech'),
-                    subtitle: const Text('Only applies in portrait mode'),
-                    value: autoSendSpeech,
-                    onChanged: (value) {
-                      setState(() {
-                        autoSendSpeech = value;
-                      });
-                    },
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
-        actions: [          
+        actions: [
           TextButton(
             onPressed: () {
               if (mounted) Navigator.of(context).pop();
             },
             child: const Text('Cancel'),
           ),
+          // Save button
           TextButton(
             onPressed: () async {
               // Show confirmation dialog
               final confirmed = await showDialog<bool>(
                 context: context,
+                useRootNavigator: true,
                 builder: (context) => AlertDialog(
                   title: const Text('Confirm Save'),
                   content: const Text('Save these settings?'),
@@ -703,9 +642,8 @@ class _MainScreenState extends State<MainScreen> {
                   ],
                 ),
               ) ?? false;
-
               if (!confirmed) return;
-
+              // Save entered values
               if (formKey.currentState?.validate() != true) return;
               final newWebhook = webhookCtrl.text.trim();
               final newTts = ttsCtrl.text.trim();
@@ -728,14 +666,16 @@ class _MainScreenState extends State<MainScreen> {
             },
             child: const Text('Save'),
           ),
+          // Reset button
           TextButton(
             onPressed: () async {
               // Show confirmation dialog
               final confirmed = await showDialog<bool>(
                 context: context,
+                useRootNavigator: true,
                 builder: (context) => AlertDialog(
                   title: const Text('Confirm Reset'),
-                  content: const Text('Reset all settings to defaults? This cannot be undone.'),
+                  content: const Text('Reset these settings to default and save?'),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.of(context).pop(false),
@@ -748,9 +688,7 @@ class _MainScreenState extends State<MainScreen> {
                   ],
                 ),
               ) ?? false;
-
               if (!confirmed) return;
-
               // Reset stored values to defaults
               await _resetToDefaults();
               await ConfigManager.setDebugLogVisible(false); // Reset debug log to default (disabled)
@@ -763,54 +701,6 @@ class _MainScreenState extends State<MainScreen> {
               );
             },
             child: const Text('Reset'),
-          ),
-          TextButton.icon(
-            icon: const Icon(Icons.bug_report),
-            label: const Text('Debug Log'),
-            onPressed: () {
-              Navigator.of(context).pop(); // Close settings dialog
-              _showDebugLogDialog();
-            },
-          )
-        ],
-      ),
-    );
-  }
-
-  void _showDebugLogDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Debug Log'),
-        content: Container(
-          width: double.maxFinite,
-          constraints: const BoxConstraints(maxHeight: 400),
-          child: SingleChildScrollView(
-            reverse: true,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _debugLog.isEmpty
-                  ? [const Text('No debug messages yet.')]
-                  : _debugLog.map((msg) => Text(
-                      msg,
-                      style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
-                    )).toList(),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              setState(() {
-                _debugLog.clear();
-              });
-              _addDebug('Debug log cleared');
-            },
-            child: const Text('Clear'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
           ),
         ],
       ),
