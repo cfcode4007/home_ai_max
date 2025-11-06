@@ -5,6 +5,8 @@ class ConfigManager {
   static const String _keyTts = 'tts_server_url';
   static const String _keyDebugLogVisible = 'debug_log_visible';
   static const String _keyAutoSendSpeech = 'auto_send_speech';
+  // 3.5.3
+  static const String _keyHostMode = 'host_mode';
   static const String defaultWebhookUrl = 'http://192.168.123.128:5001/max';
   static const String defaultTtsUrl = 'http://192.168.123.128:5001/tts';
 
@@ -36,6 +38,12 @@ class ConfigManager {
     return prefs.getBool(_keyAutoSendSpeech) ?? false; // Default to false (manual send)
   }
 
+  // 3.5.3
+  static Future<bool> getHostMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyHostMode) ?? false; // Default to false (client mode normally)
+  }
+
   static Future<void> setConfigValue(String key, String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(key, value);
@@ -49,5 +57,11 @@ class ConfigManager {
   static Future<void> setAutoSendSpeech(bool autoSend) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyAutoSendSpeech, autoSend);
+  }
+
+  // 3.5.3
+  static Future<void> setHostMode(bool hostMode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyHostMode, hostMode);
   }
 }

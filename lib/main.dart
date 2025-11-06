@@ -3,10 +3,9 @@
 
   Author:      Colin Fajardo
 
-  Version:     3.5.2
-               - can now receive 'speak' notifications, translate them with TTS server and fall back to local translation if unavailable
-               - some redundant and outdated code such as register ip and related items removed
-               - landscape mode has been vaulted due to causing issues with portrait mode
+  Version:     3.5.3
+               - host mode added, and made not default so that client devices can't receive unsolicited requests
+               - rudimentary brightness and volume control being implemented, for now only raise brightness when AI responds
 
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -22,7 +21,10 @@ import 'widgets/orb_visualizer.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
 import 'package:flutter/foundation.dart';
+import 'device_utils.dart';
 
+// 3.5.3
+final DeviceUtils deviceUtils = DeviceUtils();
 
 void main() {
   runApp(const HomeAIMaxApp());
@@ -72,6 +74,8 @@ class _MainScreenState extends State<MainScreen> {
   final Map<String, String> _config = {};
   bool _debugLogVisible = false;
   bool _autoSendSpeech = false;
+  // 3.5.3
+  bool _hostMode = false;
 
   void _addDebug(String message) {
     setState(() {
@@ -93,21 +97,36 @@ class _MainScreenState extends State<MainScreen> {
     _audioPlayer.onPlayerComplete.listen((event) {
       setState(() => _isSpeaking = false);
       _addDebug('AudioPlayer: playback complete');
+      // 3.5.3
+      // Reset brightness to half when speaking ends
+      deviceUtils.setBrightness(0.5);
     });
-  // start local server to receive notifications from Flask
-  _startLocalServer();
+    // start local server to receive notifications from Flask if host mode is on
+    // 3.5.3
+    if (_hostMode) {
+      _startLocalServer();
+    }
     _addDebug('Initializing TTS');
     _tts.setStartHandler(() {
       setState(() => _isSpeaking = true);
       _addDebug('TTS: start handler called');
+      // 3.5.3
+      // Set brightness to full when speaking starts
+      deviceUtils.setBrightness(1.0);
     });
     _tts.setCompletionHandler(() {
       setState(() => _isSpeaking = false);
       _addDebug('TTS: completion handler called');
+      // 3.5.3
+      // Reset brightness to half when speaking ends
+      deviceUtils.setBrightness(0.5);
     });
     _tts.setErrorHandler((msg) {
       setState(() => _isSpeaking = false);
       _addDebug('TTS: error handler called: $msg');
+      // 3.5.3
+      // Reset brightness to half on error
+      deviceUtils.setBrightness(0.5);
     });
   }
 
@@ -117,13 +136,19 @@ class _MainScreenState extends State<MainScreen> {
       final tts = await ConfigManager.getTtsServerUrl();
       final debugVisible = await ConfigManager.getDebugLogVisible();
       final autoSend = await ConfigManager.getAutoSendSpeech();
+      final hostMode = await ConfigManager.getHostMode();
       setState(() {
         _config['webhook'] = webhook;
         _config['tts'] = tts;
         _debugLogVisible = debugVisible;
         _autoSendSpeech = autoSend;
+        _hostMode = hostMode;
       });
-  _addDebug('Config loaded: webhook=$webhook tts=$tts debugVisible=$debugVisible autoSend=$autoSend');
+      _addDebug('Config loaded: webhook=$webhook tts=$tts debugVisible=$debugVisible autoSend=$autoSend hostMode=$hostMode');
+      // 3.5.3
+      // Set initial brightness to half
+      await deviceUtils.setBrightness(0.5);
+      _addDebug('Initial brightness set to 0.5');
     } catch (e) {
       _addDebug('Failed to load config: $e');
     }
@@ -159,8 +184,10 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _startLocalServer() async {
     // Skip local server on web platform, since browsers cannot bind to network ports
-    if (kIsWeb) {
-      _addDebug('Local server skipped on web platform');
+    // 3.5.3
+    // Or if not in host mode on startup
+    if (kIsWeb || !_hostMode) {
+      _addDebug('Local server startup canceled, on web platform or not in host mode');
       return;
     }
     try {
@@ -183,7 +210,8 @@ class _MainScreenState extends State<MainScreen> {
                 });
                 _addDebug('Received message: $message');
                 // Request TTS audio from configured Flask server and play it
-                await _requestAndPlayTts(message);
+                // 3.5.3
+                await _playTtsServer(message);
               } else {
                 _addDebug('Message received but no message field');
               }
@@ -321,6 +349,9 @@ class _MainScreenState extends State<MainScreen> {
               if (audioB64 != null && audioB64.isNotEmpty) {
                 _addDebug('Playing GTTS base64 audio from response');
                 setState(() => _isSpeaking = true);
+                // 3.5.3
+                // Set brightness to full when speaking starts
+                await deviceUtils.setBrightness(1.0);
                 try {
                   // Decode base64 audio
                   final audioBytes = base64Decode(audioB64);
@@ -328,12 +359,17 @@ class _MainScreenState extends State<MainScreen> {
                 } catch (e) {
                   _addDebug('Base64 audio playback error: $e');
                   // Fallback to local TTS
-                  await _speakReply(message);
+                  // 3.5.3
+                  await _playTtsLocal(message);
                 }
               } else {
                 // No audio, use local TTS
                 setState(() => _isSpeaking = true);
-                await _speakReply(message);
+                // 3.5.3
+                // Set brightness to full when speaking starts
+                await deviceUtils.setBrightness(1.0);
+                // 3.5.3
+                await _playTtsLocal(message);
               }
             } else {
               setState(() {
@@ -372,7 +408,8 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  Future<void> _requestAndPlayTts(String text) async {
+  // 3.5.3
+  Future<void> _playTtsServer(String text) async {
     try {
       final ttsUrl = _config['tts'] ?? await ConfigManager.getTtsServerUrl();
       final uri = Uri.parse(ttsUrl);
@@ -388,12 +425,16 @@ class _MainScreenState extends State<MainScreen> {
         if (contentType.contains('audio') && resp.bodyBytes.isNotEmpty) {
           _addDebug('Playing returned audio (${resp.bodyBytes.length} bytes)');
           setState(() => _isSpeaking = true);
+          // 3.5.3
+          // Set brightness to full when speaking starts
+          await deviceUtils.setBrightness(1.0);
           try {
             await _audioPlayer.play(BytesSource(resp.bodyBytes));
           } catch (e) {
             _addDebug('AudioPlayer.play error: $e');
             // fallback to local TTS
-            await _speakReply(text);
+            // 3.5.3
+            await _playTtsLocal(text);
           }
         } else {
           // Not audio, maybe JSON with text reply
@@ -405,19 +446,23 @@ class _MainScreenState extends State<MainScreen> {
           } catch (_) {
             // ignore
           }
-          await _speakReply(reply ?? text);
+          // 3.5.3
+          await _playTtsLocal(reply ?? text);
         }
       } else {
         _addDebug('TTS request failed: ${resp.statusCode}');
-        await _speakReply(text);
+        // 3.5.3        
+        await _playTtsLocal(text);
       }
     } catch (e) {
       _addDebug('Error requesting TTS: $e');
-      await _speakReply(text);
+      // 3.5.3        
+      await _playTtsLocal(text);
     }
   }
 
-  Future<void> _speakReply(String text) async {
+  // 3.5.3
+  Future<void> _playTtsLocal(String text) async {
     try {
       _addDebug('TTS: using local TTS');
       _addDebug('TTS: preparing to speak');
@@ -548,13 +593,19 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _showConfigDialog() async {
     final webhook = await ConfigManager.getWebhookUrl();
     final tts = await ConfigManager.getTtsServerUrl();
-    final debugVisible = await ConfigManager.getDebugLogVisible();
-    final autoSend = await ConfigManager.getAutoSendSpeech();
+    // 3.5.3
+    bool debugVisible = await ConfigManager.getDebugLogVisible();
+    // 3.5.3
+    bool autoSend = await ConfigManager.getAutoSendSpeech();
+    // 3.5.3
+    bool hostMode = await ConfigManager.getHostMode();
     if (!mounted) return;
     final webhookCtrl = TextEditingController(text: webhook);
     final ttsCtrl = TextEditingController(text: tts);
-    bool debugLogVisible = debugVisible;
-    bool autoSendSpeech = autoSend;
+    // 3.5.3
+    // bool debugLogVisible = debugVisible;
+    // bool autoSendSpeech = autoSend;
+    // bool hostModeEnabled = hostMode;
     final formKey = GlobalKey<FormState>();
     showDialog(
       context: context,
@@ -590,10 +641,12 @@ class _MainScreenState extends State<MainScreen> {
               StatefulBuilder(
                 builder: (context, setState) => SwitchListTile(
                   title: const Text('Show Debug Log'),
-                  value: debugLogVisible,
+                  // 3.5.3
+                  value: debugVisible,
                   onChanged: (value) {
                     setState(() {
-                      debugLogVisible = value;
+                      // 3.5.3
+                      debugVisible = value;
                     });
                   },
                 ),
@@ -601,13 +654,62 @@ class _MainScreenState extends State<MainScreen> {
               const SizedBox(height: 6),
               StatefulBuilder(
                 builder: (context, setState) => SwitchListTile(
-                  title: const Text('Auto-send Speech'),
-                  value: autoSendSpeech,
+                  title: const Text('Auto-Send Speech'),
+                  // 3.5.3
+                  value: autoSend,
                   onChanged: (value) {
                     setState(() {
-                      autoSendSpeech = value;
+                      // 3.5.3
+                      autoSend = value;
                     });
                   },
+                ),
+              ),
+              // 3.5.3
+              const SizedBox(height: 6),
+              StatefulBuilder(
+                builder: (context, setState) => SwitchListTile(
+                  title: const Text('Host Mode'),
+                  value: hostMode,
+                  // 3.5.3
+                  // onChanged: (value) {
+                  //   setState(() {
+                  //     hostMode = value;
+                  //   });
+                  // },
+                  onChanged: (value) async {
+                    bool? confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (BuildContext context) {
+                        return AlertDialog(
+                          title: Text('Confirm Host Mode Toggle'),
+                          content: hostMode == true 
+                          ? Text('Are you sure you want to disable Host Mode? This will shut down the local server without exiting the app, quickly stopping incoming requests.')
+                          : Text('Are you sure you want to enable Host Mode? This will start up a local server to receive requests from other devices on the network.'),
+                          actions: <Widget>[
+                            TextButton(
+                              child: Text('Cancel'),
+                              onPressed: () {
+                                Navigator.of(context).pop(false); // User canceled
+                              },
+                            ),
+                            TextButton(
+                              child: Text('Confirm'),
+                              onPressed: () {
+                                Navigator.of(context).pop(true); // User confirmed
+                              },
+                            ),
+                          ],
+                        );
+                      }
+                    );
+                    // If user confirmed, update the switch state
+                    if (confirm == true) {
+                      setState(() {
+                        hostMode = value;
+                      });
+                    }
+                  }
                 ),
               ),
             ],
@@ -649,8 +751,12 @@ class _MainScreenState extends State<MainScreen> {
               final newTts = ttsCtrl.text.trim();
               await ConfigManager.setConfigValue('webhook_url', newWebhook);
               await ConfigManager.setConfigValue('tts_server_url', newTts);
-              await ConfigManager.setDebugLogVisible(debugLogVisible);
-              await ConfigManager.setAutoSendSpeech(autoSendSpeech);
+              // 3.5.3
+              await ConfigManager.setDebugLogVisible(debugVisible);
+              // 3.5.3
+              await ConfigManager.setAutoSendSpeech(autoSend);
+              // 3.5.3
+              await ConfigManager.setHostMode(hostMode);
               // Ensure the state is still mounted before using the State's context
               if (!mounted) return;
               Navigator.of(this.context).pop();
