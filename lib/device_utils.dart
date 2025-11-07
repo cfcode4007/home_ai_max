@@ -32,7 +32,7 @@ class DeviceUtils {
 
   // Brightness methods
   Future<double> getBrightness() async {
-    return await ScreenBrightness.instance.current;
+    return await ScreenBrightness.instance.system;
   }
 
   Future<void> setBrightness(double brightness) async {

@@ -3,9 +3,9 @@
 
   Author:      Colin Fajardo
 
-  Version:     3.5.3
-               - host mode added, and made not default so that client devices can't receive unsolicited requests
-               - rudimentary brightness and volume control being implemented, for now only raise brightness when AI responds
+  Version:     3.5.4
+               - host mode bug fix, now appropriately starts local server and persists last saved state
+               - brightness modification only applies to host mode, and takes the user's brightness setting into account
 
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -20,10 +20,9 @@ import 'package:audioplayers/audioplayers.dart';
 import 'widgets/orb_visualizer.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
-import 'package:flutter/foundation.dart';
+// import 'package:flutter/foundation.dart';
 import 'device_utils.dart';
 
-// 3.5.3
 final DeviceUtils deviceUtils = DeviceUtils();
 
 void main() {
@@ -74,8 +73,8 @@ class _MainScreenState extends State<MainScreen> {
   final Map<String, String> _config = {};
   bool _debugLogVisible = false;
   bool _autoSendSpeech = false;
-  // 3.5.3
   bool _hostMode = false;
+  double _userBrightness = 0.2;
 
   void _addDebug(String message) {
     setState(() {
@@ -89,44 +88,48 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
     // Load config early into a centralized variable used across the app
-    _initConfig();
+    await _initConfig();
+    // Store the initial device brightness set by the user beforehand to return to later
+    // This preserves the user's current brightness setting without changing it
+    _userBrightness = await deviceUtils.getBrightness();
+    _addDebug('Preserved user brightness: $_userBrightness');
     _speech = stt.SpeechToText();
     _tts = FlutterTts();
     _audioPlayer = AudioPlayer();
     _audioPlayer.onPlayerComplete.listen((event) {
       setState(() => _isSpeaking = false);
       _addDebug('AudioPlayer: playback complete');
-      // 3.5.3
-      // Reset brightness to half when speaking ends
-      deviceUtils.setBrightness(0.5);
+      // Reset brightness to user's setting when speaking ends
+      deviceUtils.setBrightness(_userBrightness);
     });
     // start local server to receive notifications from Flask if host mode is on
-    // 3.5.3
     if (_hostMode) {
+      _addDebug('Starting local server...');
       _startLocalServer();
     }
     _addDebug('Initializing TTS');
     _tts.setStartHandler(() {
       setState(() => _isSpeaking = true);
       _addDebug('TTS: start handler called');
-      // 3.5.3
       // Set brightness to full when speaking starts
       deviceUtils.setBrightness(1.0);
     });
     _tts.setCompletionHandler(() {
       setState(() => _isSpeaking = false);
       _addDebug('TTS: completion handler called');
-      // 3.5.3
-      // Reset brightness to half when speaking ends
-      deviceUtils.setBrightness(0.5);
+      // Reset brightness to user's setting when speaking ends
+      deviceUtils.setBrightness(_userBrightness);
     });
     _tts.setErrorHandler((msg) {
       setState(() => _isSpeaking = false);
       _addDebug('TTS: error handler called: $msg');
-      // 3.5.3
-      // Reset brightness to half on error
-      deviceUtils.setBrightness(0.5);
+      // Reset brightness to user's setting on error
+      deviceUtils.setBrightness(_userBrightness);
     });
   }
 
@@ -145,10 +148,7 @@ class _MainScreenState extends State<MainScreen> {
         _hostMode = hostMode;
       });
       _addDebug('Config loaded: webhook=$webhook tts=$tts debugVisible=$debugVisible autoSend=$autoSend hostMode=$hostMode');
-      // 3.5.3
-      // Set initial brightness to half
-      await deviceUtils.setBrightness(0.5);
-      _addDebug('Initial brightness set to 0.5');
+      // Note: Brightness is handled separately in _initializeApp() to preserve user's current setting
     } catch (e) {
       _addDebug('Failed to load config: $e');
     }
@@ -158,6 +158,10 @@ class _MainScreenState extends State<MainScreen> {
     try {
       await ConfigManager.setConfigValue('webhook_url', ConfigManager.defaultWebhookUrl);
       await ConfigManager.setConfigValue('tts_server_url', ConfigManager.defaultTtsUrl);
+      // await _initConfig();
+      await ConfigManager.setDebugLogVisible(false); // Reset debug log to default (disabled)
+      await ConfigManager.setAutoSendSpeech(false); // Reset auto-send speech to default (disabled)
+      await ConfigManager.setHostMode(false); // Reset host mode to default (disabled)
       await _initConfig();
     } catch (e) {
       _addDebug('Failed to reset defaults: $e');
@@ -183,13 +187,6 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _startLocalServer() async {
-    // Skip local server on web platform, since browsers cannot bind to network ports
-    // 3.5.3
-    // Or if not in host mode on startup
-    if (kIsWeb || !_hostMode) {
-      _addDebug('Local server startup canceled, on web platform or not in host mode');
-      return;
-    }
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, 5000);
       _addDebug('Local server listening on port 5000');
@@ -210,7 +207,6 @@ class _MainScreenState extends State<MainScreen> {
                 });
                 _addDebug('Received message: $message');
                 // Request TTS audio from configured Flask server and play it
-                // 3.5.3
                 await _playTtsServer(message);
               } else {
                 _addDebug('Message received but no message field');
@@ -349,7 +345,6 @@ class _MainScreenState extends State<MainScreen> {
               if (audioB64 != null && audioB64.isNotEmpty) {
                 _addDebug('Playing GTTS base64 audio from response');
                 setState(() => _isSpeaking = true);
-                // 3.5.3
                 // Set brightness to full when speaking starts
                 await deviceUtils.setBrightness(1.0);
                 try {
@@ -359,16 +354,13 @@ class _MainScreenState extends State<MainScreen> {
                 } catch (e) {
                   _addDebug('Base64 audio playback error: $e');
                   // Fallback to local TTS
-                  // 3.5.3
                   await _playTtsLocal(message);
                 }
               } else {
                 // No audio, use local TTS
                 setState(() => _isSpeaking = true);
-                // 3.5.3
                 // Set brightness to full when speaking starts
                 await deviceUtils.setBrightness(1.0);
-                // 3.5.3
                 await _playTtsLocal(message);
               }
             } else {
@@ -408,7 +400,6 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  // 3.5.3
   Future<void> _playTtsServer(String text) async {
     try {
       final ttsUrl = _config['tts'] ?? await ConfigManager.getTtsServerUrl();
@@ -425,7 +416,6 @@ class _MainScreenState extends State<MainScreen> {
         if (contentType.contains('audio') && resp.bodyBytes.isNotEmpty) {
           _addDebug('Playing returned audio (${resp.bodyBytes.length} bytes)');
           setState(() => _isSpeaking = true);
-          // 3.5.3
           // Set brightness to full when speaking starts
           await deviceUtils.setBrightness(1.0);
           try {
@@ -433,7 +423,6 @@ class _MainScreenState extends State<MainScreen> {
           } catch (e) {
             _addDebug('AudioPlayer.play error: $e');
             // fallback to local TTS
-            // 3.5.3
             await _playTtsLocal(text);
           }
         } else {
@@ -446,22 +435,18 @@ class _MainScreenState extends State<MainScreen> {
           } catch (_) {
             // ignore
           }
-          // 3.5.3
           await _playTtsLocal(reply ?? text);
         }
       } else {
         _addDebug('TTS request failed: ${resp.statusCode}');
-        // 3.5.3        
         await _playTtsLocal(text);
       }
     } catch (e) {
       _addDebug('Error requesting TTS: $e');
-      // 3.5.3        
       await _playTtsLocal(text);
     }
   }
 
-  // 3.5.3
   Future<void> _playTtsLocal(String text) async {
     try {
       _addDebug('TTS: using local TTS');
@@ -593,19 +578,12 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _showConfigDialog() async {
     final webhook = await ConfigManager.getWebhookUrl();
     final tts = await ConfigManager.getTtsServerUrl();
-    // 3.5.3
     bool debugVisible = await ConfigManager.getDebugLogVisible();
-    // 3.5.3
     bool autoSend = await ConfigManager.getAutoSendSpeech();
-    // 3.5.3
     bool hostMode = await ConfigManager.getHostMode();
     if (!mounted) return;
     final webhookCtrl = TextEditingController(text: webhook);
     final ttsCtrl = TextEditingController(text: tts);
-    // 3.5.3
-    // bool debugLogVisible = debugVisible;
-    // bool autoSendSpeech = autoSend;
-    // bool hostModeEnabled = hostMode;
     final formKey = GlobalKey<FormState>();
     showDialog(
       context: context,
@@ -641,11 +619,9 @@ class _MainScreenState extends State<MainScreen> {
               StatefulBuilder(
                 builder: (context, setState) => SwitchListTile(
                   title: const Text('Show Debug Log'),
-                  // 3.5.3
                   value: debugVisible,
                   onChanged: (value) {
                     setState(() {
-                      // 3.5.3
                       debugVisible = value;
                     });
                   },
@@ -655,28 +631,19 @@ class _MainScreenState extends State<MainScreen> {
               StatefulBuilder(
                 builder: (context, setState) => SwitchListTile(
                   title: const Text('Auto-Send Speech'),
-                  // 3.5.3
                   value: autoSend,
                   onChanged: (value) {
                     setState(() {
-                      // 3.5.3
                       autoSend = value;
                     });
                   },
                 ),
               ),
-              // 3.5.3
               const SizedBox(height: 6),
               StatefulBuilder(
                 builder: (context, setState) => SwitchListTile(
                   title: const Text('Host Mode'),
                   value: hostMode,
-                  // 3.5.3
-                  // onChanged: (value) {
-                  //   setState(() {
-                  //     hostMode = value;
-                  //   });
-                  // },
                   onChanged: (value) async {
                     bool? confirm = await showDialog<bool>(
                       context: context,
@@ -751,12 +718,21 @@ class _MainScreenState extends State<MainScreen> {
               final newTts = ttsCtrl.text.trim();
               await ConfigManager.setConfigValue('webhook_url', newWebhook);
               await ConfigManager.setConfigValue('tts_server_url', newTts);
-              // 3.5.3
               await ConfigManager.setDebugLogVisible(debugVisible);
-              // 3.5.3
               await ConfigManager.setAutoSendSpeech(autoSend);
-              // 3.5.3
               await ConfigManager.setHostMode(hostMode);
+              if (hostMode) {
+                _addDebug('Starting local server...'); 
+                _startLocalServer();
+              }
+              else {
+                // If disabling host mode, close the server if running
+                if (_server != null) {
+                  _addDebug('Shutting down local server...');
+                  await _server?.close(force: true);
+                  _server = null;
+                }
+              }
               // Ensure the state is still mounted before using the State's context
               if (!mounted) return;
               Navigator.of(this.context).pop();
@@ -796,9 +772,9 @@ class _MainScreenState extends State<MainScreen> {
               ) ?? false;
               if (!confirmed) return;
               // Reset stored values to defaults
-              await _resetToDefaults();
-              await ConfigManager.setDebugLogVisible(false); // Reset debug log to default (disabled)
-              await ConfigManager.setAutoSendSpeech(false); // Reset auto-send speech to default (disabled)
+              await _resetToDefaults();              
+              // refresh in-memory config cache immediately so UI updates
+              // await _initConfig();
               if (!mounted) return;
               Navigator.of(this.context).pop();
               _addDebug('Settings reset to defaults');
