@@ -3,9 +3,9 @@
 
   Author:      Colin Fajardo
 
-  Version:     3.5.4
-               - host mode bug fix, now appropriately starts local server and persists last saved state
-               - brightness modification only applies to host mode, and takes the user's brightness setting into account
+  Version:     3.5.5               
+               - brightness logic changed to whenever the orb changes state
+               - brightness modification restricted to host mode
 
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -20,7 +20,6 @@ import 'package:audioplayers/audioplayers.dart';
 import 'widgets/orb_visualizer.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
-// import 'package:flutter/foundation.dart';
 import 'device_utils.dart';
 
 final DeviceUtils deviceUtils = DeviceUtils();
@@ -85,6 +84,20 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
+  // Helper method to update brightness based on orb state (only if host mode is enabled)
+  Future<void> _updateBrightnessForOrbState() async {
+    if (!_hostMode) return; // Don't touch brightness if host mode is off
+    
+    final isOrbActive = _isListening || _isSpeaking;
+    if (isOrbActive) {
+      await deviceUtils.setBrightness(1.0);
+      _addDebug('Brightness set to max (orb active)');
+    } else {
+      await deviceUtils.setBrightness(_userBrightness);
+      _addDebug('Brightness reset to user setting (orb inactive)');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -104,8 +117,8 @@ class _MainScreenState extends State<MainScreen> {
     _audioPlayer.onPlayerComplete.listen((event) {
       setState(() => _isSpeaking = false);
       _addDebug('AudioPlayer: playback complete');
-      // Reset brightness to user's setting when speaking ends
-      deviceUtils.setBrightness(_userBrightness);
+      // Update brightness based on orb state
+      _updateBrightnessForOrbState();
     });
     // start local server to receive notifications from Flask if host mode is on
     if (_hostMode) {
@@ -116,20 +129,20 @@ class _MainScreenState extends State<MainScreen> {
     _tts.setStartHandler(() {
       setState(() => _isSpeaking = true);
       _addDebug('TTS: start handler called');
-      // Set brightness to full when speaking starts
-      deviceUtils.setBrightness(1.0);
+      // Update brightness based on orb state
+      _updateBrightnessForOrbState();
     });
     _tts.setCompletionHandler(() {
       setState(() => _isSpeaking = false);
       _addDebug('TTS: completion handler called');
-      // Reset brightness to user's setting when speaking ends
-      deviceUtils.setBrightness(_userBrightness);
+      // Update brightness based on orb state
+      _updateBrightnessForOrbState();
     });
     _tts.setErrorHandler((msg) {
       setState(() => _isSpeaking = false);
       _addDebug('TTS: error handler called: $msg');
-      // Reset brightness to user's setting on error
-      deviceUtils.setBrightness(_userBrightness);
+      // Update brightness based on orb state
+      _updateBrightnessForOrbState();
     });
   }
 
@@ -158,10 +171,9 @@ class _MainScreenState extends State<MainScreen> {
     try {
       await ConfigManager.setConfigValue('webhook_url', ConfigManager.defaultWebhookUrl);
       await ConfigManager.setConfigValue('tts_server_url', ConfigManager.defaultTtsUrl);
-      // await _initConfig();
-      await ConfigManager.setDebugLogVisible(false); // Reset debug log to default (disabled)
-      await ConfigManager.setAutoSendSpeech(false); // Reset auto-send speech to default (disabled)
-      await ConfigManager.setHostMode(false); // Reset host mode to default (disabled)
+      await ConfigManager.setDebugLogVisible(false);
+      await ConfigManager.setAutoSendSpeech(false);
+      await ConfigManager.setHostMode(false);
       await _initConfig();
     } catch (e) {
       _addDebug('Failed to reset defaults: $e');
@@ -251,6 +263,8 @@ class _MainScreenState extends State<MainScreen> {
         _isListening = false;
       });
       _addDebug('Listening stopped (mic button)');
+      // Update brightness based on orb state
+      _updateBrightnessForOrbState();
     // When not listening and needs to initialize
     } else {
       _addDebug('Mic button pressed: initializing listening');
@@ -261,6 +275,8 @@ class _MainScreenState extends State<MainScreen> {
               _isListening = false;
             });
             _addDebug('Listening stopped (mic button) - status: $status');
+            // Update brightness based on orb state
+            _updateBrightnessForOrbState();
             // Auto-send only when speech recognition is truly complete ('done' status)
             // This prevents cutting off the last word when user pauses briefly
             // In landscape mode, always auto-send since there's no text input
@@ -278,6 +294,8 @@ class _MainScreenState extends State<MainScreen> {
             _isListening = false;
           });
           _addDebug('Listening error: ${error.errorMsg}');
+          // Update brightness based on orb state
+          _updateBrightnessForOrbState();
         },
       );
       // When not listening and already initialized
@@ -288,6 +306,8 @@ class _MainScreenState extends State<MainScreen> {
           _autoSentThisSession = false;
         });
         _addDebug('Listening started (mic button)');
+        // Update brightness based on orb state
+        _updateBrightnessForOrbState();
         _speech.listen(
           onResult: (result) {
             setState(() {
@@ -345,8 +365,8 @@ class _MainScreenState extends State<MainScreen> {
               if (audioB64 != null && audioB64.isNotEmpty) {
                 _addDebug('Playing GTTS base64 audio from response');
                 setState(() => _isSpeaking = true);
-                // Set brightness to full when speaking starts
-                await deviceUtils.setBrightness(1.0);
+                // Update brightness based on orb state
+                await _updateBrightnessForOrbState();
                 try {
                   // Decode base64 audio
                   final audioBytes = base64Decode(audioB64);
@@ -359,8 +379,8 @@ class _MainScreenState extends State<MainScreen> {
               } else {
                 // No audio, use local TTS
                 setState(() => _isSpeaking = true);
-                // Set brightness to full when speaking starts
-                await deviceUtils.setBrightness(1.0);
+                // Update brightness based on orb state
+                await _updateBrightnessForOrbState();
                 await _playTtsLocal(message);
               }
             } else {
@@ -416,8 +436,8 @@ class _MainScreenState extends State<MainScreen> {
         if (contentType.contains('audio') && resp.bodyBytes.isNotEmpty) {
           _addDebug('Playing returned audio (${resp.bodyBytes.length} bytes)');
           setState(() => _isSpeaking = true);
-          // Set brightness to full when speaking starts
-          await deviceUtils.setBrightness(1.0);
+          // Update brightness based on orb state
+          await _updateBrightnessForOrbState();
           try {
             await _audioPlayer.play(BytesSource(resp.bodyBytes));
           } catch (e) {
