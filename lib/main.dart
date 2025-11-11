@@ -3,8 +3,8 @@
 
   Author:      Colin Fajardo
 
-  Version:     3.5.6               
-               - dynamic volume setting by runtime command added (POST to /control only for now)
+  Version:     4.0.0               
+               - custom wake word functionality via porcupine, always listen for and respond to 'Maxine'
 
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -20,6 +20,8 @@ import 'widgets/orb_visualizer.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'config.dart';
 import 'device_utils.dart';
+import 'porcupine_service.dart';
+
 
 final DeviceUtils deviceUtils = DeviceUtils();
 
@@ -73,6 +75,18 @@ class _MainScreenState extends State<MainScreen> {
   bool _autoSendSpeech = false;
   bool _hostMode = false;
   double _userBrightness = 0.2;
+  PorcupineService? porcupineService;
+
+  /// Called when Porcupine detects a wake word. Toggles listening if not already listening.
+  void _onWakeDetected(int keywordIndex) {
+    _addDebug('Porcupine detected keyword index=$keywordIndex');
+    // Only trigger UI actions on the main thread
+    if (!mounted) return;
+    // If we're already listening via the orb, do nothing
+    if (_isListening) return;
+    // Toggle listening (do not await to avoid blocking the detection callback)
+    _toggleListening();
+  }
 
   void _addDebug(String message) {
     setState(() {
@@ -118,11 +132,19 @@ class _MainScreenState extends State<MainScreen> {
       _addDebug('AudioPlayer: playback complete');
       // Update brightness based on orb state
       _updateBrightnessForOrbState();
-    });
-    // start local server to receive notifications from Flask if host mode is on
+    });    
     if (_hostMode) {
+      // Start local server to receive notifications from Flask if host mode is on
       _addDebug('Starting local server...');
       _startLocalServer();
+      // Start porcupine service to passively listen for Maxine wake word
+      _addDebug('Starting porcupine service...');
+      porcupineService = PorcupineService(onWake: _onWakeDetected);
+      await porcupineService!.initFromAssetPaths(
+        "smt9H1XEv468kWRh0SnXkmOnDxCx2/DEXOwkTXFwzwPmM1IKwg1ykQ==",
+        ["assets/Maxine_en_android_v3_0_0.ppn"],
+      );
+      await porcupineService!.start();
     }
     _addDebug('Initializing TTS');
     _tts.setStartHandler(() {
@@ -194,6 +216,8 @@ class _MainScreenState extends State<MainScreen> {
     _tts.stop();
     _audioPlayer.dispose();
     _server?.close(force: true);
+    // Stop and dispose porcupine service if active
+    porcupineService?.dispose();
     super.dispose();
   }
 
@@ -303,17 +327,25 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _toggleListening() async {
     // When it's already listening
     if (_isListening) {
-      _addDebug('Mic button pressed: stopping listening');
+      _addDebug('Stopping listening');
       await _speech.stop();
       setState(() {
         _isListening = false;
       });
-      _addDebug('Listening stopped (mic button)');
+      _addDebug('Listening stopped');
+      if (_hostMode) {
+        // Listen for wake word again instead
+        porcupineService?.start();
+        _addDebug('Porcupine service restarted');
+      }      
       // Update brightness based on orb state
       _updateBrightnessForOrbState();
     // When not listening and needs to initialize
     } else {
-      _addDebug('Mic button pressed: initializing listening');
+      _addDebug('Initializing listening');
+      // Free up microphone from porcupine service
+      porcupineService?.stop();
+      _addDebug('Porcupine service stopped for transcription');
       bool available = await _speech.initialize(
         onStatus: (status) {
           if (status == 'done' || status == 'notListening') {
@@ -407,6 +439,12 @@ class _MainScreenState extends State<MainScreen> {
                 _feedbackMessage = message;
               });
 
+              // Listen to wake word again
+              if (_hostMode) {
+                porcupineService?.start();
+                _addDebug('Porcupine service restarted');
+              }
+
               // Play audio if available
               if (audioB64 != null && audioB64.isNotEmpty) {
                 _addDebug('Playing GTTS base64 audio from response');
@@ -428,7 +466,7 @@ class _MainScreenState extends State<MainScreen> {
                 // Update brightness based on orb state
                 await _updateBrightnessForOrbState();
                 await _playTtsLocal(message);
-              }
+              }              
             } else {
               setState(() {
                 _feedbackMessage = 'Message sent successfully! (no reply)';
@@ -447,7 +485,6 @@ class _MainScreenState extends State<MainScreen> {
             _feedbackMessage = 'Response parsing error: $e';
           });
         }
-
         _controller.clear();
       } else {
         setState(() {
@@ -758,26 +795,6 @@ class _MainScreenState extends State<MainScreen> {
           // Save button
           TextButton(
             onPressed: () async {
-              // Show confirmation dialog
-              final confirmed = await showDialog<bool>(
-                context: context,
-                useRootNavigator: true,
-                builder: (context) => AlertDialog(
-                  title: const Text('Confirm Save'),
-                  content: const Text('Save these settings?'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(false),
-                      child: const Text('Cancel'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(true),
-                      child: const Text('Save'),
-                    ),
-                  ],
-                ),
-              ) ?? false;
-              if (!confirmed) return;
               // Save entered values
               if (formKey.currentState?.validate() != true) return;
               final newWebhook = webhookCtrl.text.trim();
@@ -788,8 +805,16 @@ class _MainScreenState extends State<MainScreen> {
               await ConfigManager.setAutoSendSpeech(autoSend);
               await ConfigManager.setHostMode(hostMode);
               if (hostMode) {
+                // If enabling host mode, start the server and porcupine wake word service
                 _addDebug('Starting local server...'); 
                 _startLocalServer();
+                _addDebug('Starting porcupine service...');
+                porcupineService = PorcupineService(onWake: _onWakeDetected);
+                await porcupineService!.initFromAssetPaths(
+                  "smt9H1XEv468kWRh0SnXkmOnDxCx2/DEXOwkTXFwzwPmM1IKwg1ykQ==",
+                  ["assets/Maxine_en_android_v3_0_0.ppn"],
+                );
+                await porcupineService!.start();
               }
               else {
                 // If disabling host mode, close the server if running
@@ -798,6 +823,10 @@ class _MainScreenState extends State<MainScreen> {
                   await _server?.close(force: true);
                   _server = null;
                 }
+                // Also shut down porcupine wake word service if running
+                _addDebug('Shutting down porcupine service...');
+                await porcupineService?.dispose();
+                porcupineService = null;
               }
               // Ensure the state is still mounted before using the State's context
               if (!mounted) return;
