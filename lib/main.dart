@@ -3,9 +3,8 @@
 
   Author:      Colin Fajardo
 
-  Version:     3.5.5               
-               - brightness logic changed to whenever the orb changes state
-               - brightness modification restricted to host mode
+  Version:     3.5.6               
+               - dynamic volume setting by runtime command added (POST to /control only for now)
 
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -204,11 +203,14 @@ class _MainScreenState extends State<MainScreen> {
       _addDebug('Local server listening on port 5000');
       _server!.listen((HttpRequest request) async {
         try {
+          int statCode = 200;
+          String respCode = "Received";
           final path = request.uri.path;
           final method = request.method;
           final body = await utf8.decoder.bind(request).join();
           _addDebug('Incoming $method $path');
           _addDebug('Incoming body: $body');
+
           if (method == 'POST' && path == '/speak') {
             try {
               final data = jsonDecode(body);
@@ -222,13 +224,57 @@ class _MainScreenState extends State<MainScreen> {
                 await _playTtsServer(message);
               } else {
                 _addDebug('Message received but no message field');
+                statCode = 400;
+                respCode = 'Bad Request';
               }
             } catch (e) {
               _addDebug('Error decoding message JSON: $e');
+              statCode = 400;
+              respCode = 'Bad Request';
             }
-            request.response.statusCode = 200;
+            request.response.statusCode = statCode;
             request.response.headers.set('Access-Control-Allow-Origin', '*');
-            request.response.write('Received');
+            request.response.write(respCode);
+
+          } else if (method == 'POST' && path == '/control') {
+            try {
+              final data = jsonDecode(body) as Map<String, dynamic>;
+              final vol = data['volume'] as Map<String, dynamic>;
+              //
+              if (vol.containsKey('level')) {                
+                String volLevel = vol['level'].toString().toLowerCase();                
+                _addDebug("Level was provided: $volLevel");
+                deviceUtils.setVolume(double.parse(volLevel));
+              } 
+              else if (vol.containsKey('tune')) {
+                String volTune = vol['tune'].toString().toLowerCase();
+                _addDebug("Tune was provided: $volTune");                
+                if (volTune == "increment") {
+                  deviceUtils.volumeUp();
+                } 
+                else if (volTune == "decrement") {
+                  deviceUtils.volumeDown();
+                }
+                else {
+                  _addDebug('tune key provided with no valid value');
+                  statCode = 400;
+                  respCode = 'Bad Request';
+                }                
+              }
+              else {
+                _addDebug('/control called with no valid keys');
+                statCode = 400;
+                respCode = 'Bad Request';
+              }              
+            } catch (e) {
+              _addDebug('Error decoding message JSON: $e');
+              statCode = 400;
+              respCode = 'Bad Request';
+            }
+            request.response.statusCode = statCode;
+            request.response.headers.set('Access-Control-Allow-Origin', '*');
+            request.response.write(respCode);
+
           } else if (method == 'OPTIONS') {
             request.response.statusCode = 200;
             request.response.headers.set('Access-Control-Allow-Origin', '*');
