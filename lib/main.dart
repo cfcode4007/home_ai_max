@@ -3,9 +3,8 @@
 
   Author:      Colin Fajardo
 
-  Version:     4.0.1               
-               - wake word detection bug where saving without turning off host mode would break listening fixed
-               - version number added to title bar
+  Version:     4.0.2               
+               - landscape adjustments unvaulted, finalized (fully optimized for wake word or hands off, minimal UI)
 
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -569,8 +568,9 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final orientation = MediaQuery.of(context).orientation;
     return Scaffold(
-      appBar: AppBar(
+      appBar: orientation == Orientation.landscape ? null : AppBar(
         title: const Text('Home AI Max v4.0.1'),
         actions: [
           IconButton(
@@ -580,73 +580,105 @@ class _MainScreenState extends State<MainScreen> {
         ],
       ),
       body: SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Orb visual (animates when speaking or listening)
-                OrbVisualizer(
-                  isSpeaking: _isSpeaking,
-                  isListening: _isListening,
-                  size: 120,
-                  onTap: _isLoading ? null : _toggleListening,
-                ),
-                const SizedBox(height: 48),
-                _buildTextInput(context),
-                const SizedBox(height: 16),
-                if (_isLoading) const CircularProgressIndicator(),
-                if (_feedbackMessage != null && !_isLoading)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Builder(builder: (context) {
-                      final msg = _feedbackMessage!;
-                      Color color;
-                      final lower = msg.toLowerCase();
-                      if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
-                        color = Colors.greenAccent;
-                      } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
-                        color = Colors.redAccent;
-                      } else {
-                        // Normal server-returned text should be white
-                        color = Colors.white;
-                      }
-                      return Text(
-                        msg,
-                        style: TextStyle(
-                          color: color,
-                          fontWeight: FontWeight.w500,
+        child: OrientationBuilder(
+          builder: (context, orientation) {
+            // Landscape: minimal UI — centered orb and subtitles beneath
+            if (orientation == Orientation.landscape) {
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    OrbVisualizer(
+                      isSpeaking: _isSpeaking,
+                      isListening: _isListening,
+                      size: 120,
+                      onTap: _isLoading ? null : _toggleListening,
+                    ),
+                    const SizedBox(height: 12),
+                    if (_feedbackMessage != null)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                        child: Text(
+                          _feedbackMessage!,
+                          style: const TextStyle(fontSize: 18, color: Colors.white),
+                          textAlign: TextAlign.center,
                         ),
-                        textAlign: TextAlign.center,
-                      );
-                    }),
-                  ),
-                const SizedBox(height: 32),
-                // Debug log area (only shown if enabled)
-                if (_debugLogVisible)
-                  Container(
-                    alignment: Alignment.bottomLeft,
-                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                    decoration: BoxDecoration(
-                      color: Color.fromARGB((0.7 * 255).round(), 0, 0, 0),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    constraints: const BoxConstraints(maxHeight: 120),
-                    child: SingleChildScrollView(
-                      reverse: true,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: _debugLog.map((msg) => Text(
-                          msg,
-                          style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
-                        )).toList(),
                       ),
+                  ],
+                ),
+              );
+            }
+
+            // Portrait: full UI (existing layout)
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // Orb visual (animates when speaking or listening)
+                    OrbVisualizer(
+                      isSpeaking: _isSpeaking,
+                      isListening: _isListening,
+                      size: 120,
+                      onTap: _isLoading ? null : _toggleListening,
                     ),
-                  ),
-              ],
-            ),
-          ),
+                    const SizedBox(height: 48),
+                    _buildTextInput(context),
+                    const SizedBox(height: 16),
+                    if (_isLoading) const CircularProgressIndicator(),
+                    if (_feedbackMessage != null && !_isLoading)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Builder(builder: (context) {
+                          final msg = _feedbackMessage!;
+                          Color color;
+                          final lower = msg.toLowerCase();
+                          if (msg.startsWith('Message sent') || msg.startsWith('Config reloaded')) {
+                            color = Colors.greenAccent;
+                          } else if (lower.startsWith('error') || lower.contains('failed') || lower.contains('error')) {
+                            color = Colors.redAccent;
+                          } else {
+                            // Normal server-returned text should be white
+                            color = Colors.white;
+                          }
+                          return Text(
+                            msg,
+                            style: TextStyle(
+                              color: color,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            textAlign: TextAlign.center,
+                          );
+                        }),
+                      ),
+                    const SizedBox(height: 32),
+                    // Debug log area (only shown if enabled)
+                    if (_debugLogVisible)
+                      Container(
+                        alignment: Alignment.bottomLeft,
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                        decoration: BoxDecoration(
+                          color: Color.fromARGB((0.7 * 255).round(), 0, 0, 0),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        constraints: const BoxConstraints(maxHeight: 120),
+                        child: SingleChildScrollView(
+                          reverse: true,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: _debugLog.map((msg) => Text(
+                              msg,
+                              style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
+                            )).toList(),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
