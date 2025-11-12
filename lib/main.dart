@@ -3,8 +3,9 @@
 
   Author:      Colin Fajardo
 
-  Version:     4.0.0               
-               - custom wake word functionality via porcupine, always listen for and respond to 'Maxine'
+  Version:     4.0.1               
+               - wake word detection bug where saving without turning off host mode would break listening fixed
+               - version number added to title bar
 
   Description: Main file that assembles, and controls the logic of the Home AI Max Flutter app.
 */
@@ -340,6 +341,7 @@ class _MainScreenState extends State<MainScreen> {
       }      
       // Update brightness based on orb state
       _updateBrightnessForOrbState();
+      
     // When not listening and needs to initialize
     } else {
       _addDebug('Initializing listening');
@@ -569,7 +571,7 @@ class _MainScreenState extends State<MainScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Home AI Max'),
+        title: const Text('Home AI Max v4.0.1'),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
@@ -805,19 +807,21 @@ class _MainScreenState extends State<MainScreen> {
               await ConfigManager.setAutoSendSpeech(autoSend);
               await ConfigManager.setHostMode(hostMode);
               if (hostMode) {
-                // If enabling host mode, start the server and porcupine wake word service
-                _addDebug('Starting local server...'); 
-                _startLocalServer();
-                _addDebug('Starting porcupine service...');
-                porcupineService = PorcupineService(onWake: _onWakeDetected);
-                await porcupineService!.initFromAssetPaths(
-                  "smt9H1XEv468kWRh0SnXkmOnDxCx2/DEXOwkTXFwzwPmM1IKwg1ykQ==",
-                  ["assets/Maxine_en_android_v3_0_0.ppn"],
-                );
-                await porcupineService!.start();
+                // If enabling host mode, start the server and porcupine wake word service (when not already running)
+                if (_server == null && porcupineService == null) {
+                  _addDebug('Starting local server...'); 
+                  _startLocalServer();
+                  _addDebug('Starting porcupine service...');
+                  porcupineService = PorcupineService(onWake: _onWakeDetected);
+                  await porcupineService!.initFromAssetPaths(
+                    "smt9H1XEv468kWRh0SnXkmOnDxCx2/DEXOwkTXFwzwPmM1IKwg1ykQ==",
+                    ["assets/Maxine_en_android_v3_0_0.ppn"],
+                  );
+                  await porcupineService!.start();
+                }
               }
               else {
-                // If disabling host mode, close the server if running
+                // If disabling host mode, close the server (when already running)
                 if (_server != null) {
                   _addDebug('Shutting down local server...');
                   await _server?.close(force: true);
